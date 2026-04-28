@@ -3,6 +3,7 @@ from typing import Optional
 import toml
 from rich.align import Align
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
 from rich.text import Text
@@ -58,7 +59,7 @@ class UI:
             self.console.print(text)
 
         self.console.print(
-            "[dim]local-first AI command center • Ollama-ready • v0.1[/]\n"
+            "[dim]local-first AI command center • Ollama-ready • v0.2[/]\n"
         )
 
     def panel(
@@ -73,6 +74,18 @@ class UI:
             title=title,
             subtitle=subtitle,
             border_style=style,
+            padding=(1, 2),
+        )
+        self.console.print(panel)
+
+    def ai_response(self, content: str, model: str):
+        """Render AI generated content as Markdown in a branded panel."""
+        md = Markdown(content)
+        panel = Panel(
+            md,
+            title=f"[brand]TERNEXAR[/]",
+            subtitle=f"[dim]model: {model}[/]",
+            border_style=CYAN,
             padding=(1, 2),
         )
         self.console.print(panel)

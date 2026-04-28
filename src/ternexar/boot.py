@@ -50,7 +50,7 @@ class BootSequence:
         # Final Status Panel
         all_success = all(r.success for r in results if not getattr(r, 'skipped', False))
         if all_success:
-            ui.panel("[bold green]SYSTEM READY[/]\nTERNEXAR v0.1 is active and connected.", title="READY", style="green")
+            ui.panel(f"[bold green]SYSTEM READY[/]\nTERNEXAR v0.2 is active and connected.", title="READY", style="green")
             ui.hint("type [bold cyan]tx --help[/] to explore")
         else:
             # Find the first failure to show fix command

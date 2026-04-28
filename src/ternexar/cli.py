@@ -1,6 +1,7 @@
 import typer
 
 from ternexar import __version__
+from ternexar.ask import handle_ask
 from ternexar.boot import boot_sequence
 from ternexar.config import CONFIG_FILE, config_manager
 from ternexar.ui import ui
@@ -28,6 +29,18 @@ def main(
     """Run the standard boot sequence and health check."""
     if ctx.invoked_subcommand is None:
         boot_sequence.run(show_splash=not no_splash)
+
+
+@app.command()
+def ask(
+    prompt: str = typer.Argument(..., help="The question or prompt for the AI."),
+    model: str = typer.Option(None, "--model", "-m", help="Override default model."),
+    temperature: float = typer.Option(
+        None, "--temp", "-t", help="Override default temperature."
+    ),
+):
+    """Ask TERNEXAR a question using the local AI model."""
+    handle_ask(prompt, model_override=model, temperature_override=temperature)
 
 
 @app.command()
