@@ -3,6 +3,7 @@ import typer
 from ternexar import __version__
 from ternexar.ask import handle_ask
 from ternexar.plan import handle_plan
+from ternexar.preview import handle_preview
 from ternexar.risk import risk_engine
 from ternexar.boot import boot_sequence
 from ternexar.config import CONFIG_FILE, config_manager
@@ -55,6 +56,18 @@ def plan(
 ):
     """Generate a safe terminal action plan for a specific task."""
     handle_plan(task, model_override=model, temperature_override=temperature)
+
+
+@app.command()
+def preview(
+    task: str = typer.Argument(..., help="The task you want to preview."),
+    model: str = typer.Option(None, "--model", "-m", help="Override default model."),
+    temperature: float = typer.Option(
+        None, "--temp", "-t", help="Override default temperature."
+    ),
+):
+    """Dry-run preview of what TERNEXAR would do for a specific task."""
+    handle_preview(task, model_override=model, temperature_override=temperature)
 
 
 @app.command()

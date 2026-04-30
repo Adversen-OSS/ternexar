@@ -175,5 +175,48 @@ class UI:
         
         self.console.print("\n")
 
+    def render_preview_report(self, task: str, actions):
+        """Render the TERNEXAR v0.5 Preview report."""
+        self.console.print("\n" + "=" * 80)
+        self.console.print(Align.center("[bold blink red]DRY RUN ONLY - NO COMMANDS EXECUTED[/]"))
+        self.console.print("=" * 80 + "\n")
+
+        self.console.print(f"[info]TASK:[/] [bold white]{task}[/]\n")
+
+        table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 1))
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Command", style="bold white")
+        table.add_column("Risk", width=10)
+        table.add_column("Policy", style="dim")
+        table.add_column("Status", width=10)
+
+        for i, action in enumerate(actions, 1):
+            risk_color = action.analysis.level.color
+            status_style = "bold green" if action.status == "STAGED" else "bold red"
+            
+            table.add_row(
+                str(i),
+                action.command,
+                f"[{risk_color}]{action.analysis.level.value}[/]",
+                action.policy,
+                f"[{status_style}]{action.status}[/]"
+            )
+
+        self.console.print(table)
+
+        # Final Summary
+        staged_count = sum(1 for a in actions if a.status == "STAGED")
+        blocked_count = sum(1 for a in actions if a.status == "BLOCKED")
+
+        self.console.print("\n" + "-" * 40)
+        self.console.print(f"Summary: [bold green]{staged_count} Staged[/] | [bold red]{blocked_count} Blocked[/]")
+        
+        if blocked_count > 0:
+            self.warning("\nSome commands were BLOCKED for safety. Use 'tx risk <command>' for details.")
+        
+        self.console.print("-" * 40 + "\n")
+        self.console.print(f"[dim]Note: Staged commands would require confirmation in a future execution module.[/]")
+        self.console.print("\n")
+
 
 ui = UI()

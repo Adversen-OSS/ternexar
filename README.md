@@ -12,7 +12,8 @@ TERNEXAR operates on a strict **Ask → Plan → Risk** pipeline. We believe ter
 
 ## Features
 
-*   **v0.4: Risk Engine** – A deterministic, rule-based system that classifies command risk levels (Low, Medium, High, Critical) using local safety heuristics.
+*   **v0.5: Preview Mode** – A high-fidelity dry-run environment. Simulate the full execution lifecycle (understanding, planning, and risk assessment) without running any shell commands.
+*   **v0.4: Risk Engine** – A deterministic, rule-based system that classifies command risk levels (LOW, MEDIUM, HIGH, BLOCKED) using local safety heuristics.
 *   **v0.3: Plan Mode** – Generates structured, multi-step terminal action plans using local Ollama models.
 *   **v0.2: Ask Mode** – One-shot technical questions and command lookups via `tx ask`.
 *   **v0.1: The Foundation** – Environment diagnostics (`tx doctor`), local configuration management, and a high-fidelity terminal UI.
@@ -40,10 +41,16 @@ Transform a natural language goal into a structured sequence of commands.
 tx plan "Set up a local postgres container with a persistent volume"
 ```
 
+### Preview
+Dry-run a task to see exactly which commands would be staged, their risk levels, and which ones would be blocked.
+```bash
+tx preview "Install docker and run hello-world"
+```
+
 ### Risk
 Analyze the generated plan using the deterministic risk engine. This identifies potentially destructive commands (like `rm -rf` or `mkfs`) before they are staged.
 ```bash
-tx risk
+tx risk "rm -rf /"
 ```
 
 ### Diagnostics
@@ -55,7 +62,7 @@ tx config path    # Locate configuration files
 
 ## Project Status
 
-TERNEXAR is currently in **v0.4 (Beta)**. 
+TERNEXAR is currently in **v0.5 (Beta)**. 
 - All LLM interactions are handled locally via Ollama.
 - The Risk Engine is entirely local and rule-based; it does not use LLMs to assess safety.
 - **No commands are executed by the tool.**
