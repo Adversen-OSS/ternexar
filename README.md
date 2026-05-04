@@ -62,7 +62,7 @@ tx config path    # Locate configuration files
 
 ## Project Status
 
-TERNEXAR is currently in **v0.5 (Beta)**. 
+TERNEXAR is currently in **v0.6 (Beta)**. 
 - All LLM interactions are handled locally via Ollama.
 - The Risk Engine is entirely local and rule-based; it does not use LLMs to assess safety.
 - **No commands are executed by the tool.**
@@ -72,3 +72,8 @@ The next phase of development focuses on the **Execute** module, which will prov
 
 ---
 *Built for the local-first era.*
+secure "apply" workflow for approved plans, featuring dry-runs and granular confirmation prompts.
+
+---
+*Built for the local-first era.*
+l-first era.*

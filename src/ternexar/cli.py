@@ -1,5 +1,6 @@
 import typer
 
+from ternexar.gate import handle_gate
 from ternexar import __version__
 from ternexar.ask import handle_ask
 from ternexar.plan import handle_plan
@@ -68,6 +69,14 @@ def preview(
 ):
     """Dry-run preview of what TERNEXAR would do for a specific task."""
     handle_preview(task, model_override=model, temperature_override=temperature)
+
+
+@app.command()
+def gate(
+    command: str = typer.Argument(..., help="The shell command to evaluate through the safety gate.")
+):
+    """Evaluate a command against the execution safety gate."""
+    handle_gate(command)
 
 
 @app.command()

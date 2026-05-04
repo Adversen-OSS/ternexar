@@ -175,6 +175,47 @@ class UI:
         
         self.console.print("\n")
 
+    def render_gate_report(self, result):
+        """Render a detailed execution gate report."""
+        self.console.print(f"\n[brand]EXECUTION POLICY GATE[/]")
+
+        # Command Panel
+        self.console.print(Panel(
+            Text(result.command, style="bold white"),
+            title="Command",
+            border_style=CYAN,
+            padding=(0, 1)
+        ))
+
+        # Decision Grid
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="dim cyan")
+        table.add_column("Value")
+
+        risk_color = result.risk_level.color
+        gate_color = {
+            "PASS": "bold green",
+            "HOLD": "bold yellow",
+            "BLOCK": "bold red"
+        }.get(result.gate_decision.value, "white")
+
+        table.add_row("Risk Level", f"[{risk_color}]{result.risk_level.value}[/]")
+        table.add_row("Patterns", ", ".join(result.matched_patterns))
+        table.add_row("Policy Decision", f"[bold white]{result.policy.value}[/]")
+        table.add_row("Gate Decision", f"[{gate_color}]{result.gate_decision.value}[/]")
+        table.add_row("Reason", result.reason)
+        
+        self.console.print(table)
+
+        # Future Instruction
+        self.console.print(Panel(
+            Text(result.future_instruction, style="italic white"),
+            title="[dim]Future tx do behavior[/]",
+            border_style="dim white",
+            padding=(0, 1)
+        ))
+        self.console.print("\n")
+
     def render_preview_report(self, task: str, actions):
         """Render the TERNEXAR v0.5 Preview report."""
         self.console.print("\n" + "=" * 80)
