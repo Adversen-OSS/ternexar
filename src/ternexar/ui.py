@@ -216,6 +216,59 @@ class UI:
         ))
         self.console.print("\n")
 
+    def render_confirmation_report(self, result):
+        """Render a detailed confirmation protocol report."""
+        self.console.print(f"\n[brand]CONFIRMATION PROTOCOL[/]")
+
+        # Command Panel
+        self.console.print(Panel(
+            Text(result.command, style="bold white"),
+            title="Command",
+            border_style=CYAN,
+            padding=(0, 1)
+        ))
+
+        # Policy Table
+        table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 2))
+        table.add_column("Key", style="dim cyan")
+        table.add_column("Value")
+
+        risk_color = result.risk_level.color
+        gate_color = {
+            "PASS": "bold green",
+            "HOLD": "bold yellow",
+            "BLOCK": "bold red"
+        }.get(result.gate_decision.value, "white")
+
+        table.add_row("Risk Level", f"[{risk_color}]{result.risk_level.value}[/]")
+        table.add_row("Gate Decision", f"[{gate_color}]{result.gate_decision.value}[/]")
+        table.add_row("Policy Decision", f"[bold white]{result.policy.value}[/]")
+        table.add_row("Confirmation Mode", f"[bold white]{result.mode}[/]")
+        
+        self.console.print(table)
+
+        # Future Interaction Panel
+        interaction_style = {
+            "MINIMAL_CONFIRMATION": "bold green",
+            "STANDARD_CONFIRMATION": "bold yellow",
+            "STRONG_CONFIRMATION": "bold red",
+            "REFUSED": "bold blink red"
+        }.get(result.mode, "white")
+
+        self.console.print(Panel(
+            Text(result.future_behavior, style=interaction_style),
+            title="[dim]Future tx do behavior[/]",
+            border_style=interaction_style,
+            padding=(0, 1)
+        ))
+
+        # Safety Recommendation
+        self.console.print(f"\n[dim]Reason: {result.reason}[/]")
+        if result.recommendation:
+            self.console.print(f"[success]Recommendation:[/] {result.recommendation}")
+        
+        self.console.print("\n")
+
     def render_preview_report(self, task: str, actions):
         """Render the TERNEXAR v0.5 Preview report."""
         self.console.print("\n" + "=" * 80)

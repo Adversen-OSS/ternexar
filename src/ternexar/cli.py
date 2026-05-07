@@ -1,5 +1,6 @@
 import typer
 
+from ternexar.confirm import handle_confirm
 from ternexar.gate import handle_gate
 from ternexar import __version__
 from ternexar.ask import handle_ask
@@ -77,6 +78,14 @@ def gate(
 ):
     """Evaluate a command against the execution safety gate."""
     handle_gate(command)
+
+
+@app.command()
+def confirm(
+    command: str = typer.Argument(..., help="The shell command to simulate confirmation for.")
+):
+    """Simulate the confirmation protocol for a specific command."""
+    handle_confirm(command)
 
 
 @app.command()

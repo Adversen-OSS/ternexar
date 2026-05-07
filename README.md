@@ -53,6 +53,18 @@ Analyze the generated plan using the deterministic risk engine. This identifies 
 tx risk "rm -rf /"
 ```
 
+### Gate
+Evaluate a specific command against the execution safety gate to see its policy decision.
+```bash
+tx gate "sudo apt update"
+```
+
+### Confirm
+Simulate how future execution would request confirmation based on risk and policy.
+```bash
+tx confirm "sudo apt update"
+```
+
 ### Diagnostics
 ```bash
 tx doctor         # Validate local environment and Ollama connectivity
@@ -73,6 +85,11 @@ The next phase of development focuses on the **Execute** module, which will prov
 ---
 *Built for the local-first era.*
 secure "apply" workflow for approved plans, featuring dry-runs and granular confirmation prompts.
+
+---
+*Built for the local-first era.*
+l-first era.*
+ompts.
 
 ---
 *Built for the local-first era.*
