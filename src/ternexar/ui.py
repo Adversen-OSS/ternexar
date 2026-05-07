@@ -128,6 +128,9 @@ class UI:
     def warning(self, message: str):
         self.console.print(f"[warning]WARNING:[/] {message}")
 
+    def success(self, message: str):
+        self.console.print(f"[success]SUCCESS:[/] {message}")
+
     def info(self, message: str):
         self.console.print(f"[info]{message}[/]")
 
@@ -255,8 +258,13 @@ class UI:
             "REFUSED": "bold blink red"
         }.get(result.mode, "white")
 
+        # Update wording for LOW as per v0.8 requirements
+        future_behavior = result.future_behavior
+        if result.risk_level.value == "LOW":
+            future_behavior = "Eligible for future execution with visible/auditable minimal confirmation."
+
         self.console.print(Panel(
-            Text(result.future_behavior, style=interaction_style),
+            Text(future_behavior, style=interaction_style),
             title="[dim]Future tx do behavior[/]",
             border_style=interaction_style,
             padding=(0, 1)
@@ -268,6 +276,81 @@ class UI:
             self.console.print(f"[success]Recommendation:[/] {result.recommendation}")
         
         self.console.print("\n")
+
+    def render_audit_log(self, records):
+        """Render the audit log table."""
+        self.console.print(f"\n[brand]TERNEXAR AUDIT LOG[/]")
+        
+        if not records:
+            self.console.print("[dim]No records found.[/]\n")
+            return
+
+        table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 1))
+        table.add_column("Timestamp", style="dim", width=20)
+        table.add_column("Action", style="cyan")
+        table.add_column("Command", style="white")
+        table.add_column("Risk", width=10)
+        table.add_column("Verdict", width=15)
+
+        for rec in records:
+            # Color coding for risk and verdict
+            risk_color = "green" if rec["risk_level"] == "LOW" else "yellow" if rec["risk_level"] == "MEDIUM" else "red"
+            verdict_color = "bold green" if rec["result"] == "DRY_ELIGIBLE" else "bold yellow" if rec["result"] == "HELD" else "bold red"
+            
+            # Simple ISO timestamp truncation for display
+            ts = rec["timestamp"].split(".")[0].replace("T", " ")
+
+            table.add_row(
+                ts,
+                rec["action_type"],
+                rec["command"],
+                f"[{risk_color}]{rec['risk_level']}[/]",
+                f"[{verdict_color}]{rec['result']}[/]"
+            )
+
+        self.console.print(table)
+        self.console.print("\n")
+
+    def render_runner_check(self, result):
+        """Render the runner simulation check report."""
+        self.console.print(f"\n[brand]RUNNER SIMULATION CHECK[/]")
+
+        # Command Panel
+        self.console.print(Panel(
+            Text(result.command, style="bold white"),
+            title="Command",
+            border_style=CYAN,
+            padding=(0, 1)
+        ))
+
+        # Status Table
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="dim cyan")
+        table.add_column("Value")
+
+        risk_color = result.risk_level.color
+        verdict_style = {
+            "DRY_ELIGIBLE": "bold green",
+            "HELD": "bold yellow",
+            "DENIED": "bold red"
+        }.get(result.verdict.value, "white")
+
+        table.add_row("Risk Level", f"[{risk_color}]{result.risk_level.value}[/]")
+        table.add_row("Gate Status", f"[bold white]{result.gate_decision.value}[/]")
+        table.add_row("Confirmation", f"[bold white]{result.confirmation_mode}[/]")
+        
+        self.console.print(table)
+
+        # Verdict Panel
+        self.console.print(Panel(
+            Align.center(Text(result.verdict.value, style=verdict_style)),
+            title="[bold sky_blue1]SIMULATED RUNNER DECISION[/]",
+            border_style="sky_blue1",
+            padding=(1, 2)
+        ))
+
+        self.console.print(f"[dim]Reason: {result.reason}[/]")
+        self.console.print("\n[dim blink]DRY RUN ONLY - NO COMMANDS EXECUTED[/]\n")
 
     def render_preview_report(self, task: str, actions):
         """Render the TERNEXAR v0.5 Preview report."""

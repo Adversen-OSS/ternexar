@@ -12,6 +12,9 @@ TERNEXAR operates on a strict **Ask → Plan → Risk** pipeline. We believe ter
 
 ## Features
 
+*   **v0.8: Audit & Runner Simulation** – Complete observability for safety decisions. Simulate the full execution pipeline with `tx runner-check` and view detailed safety logs with `tx audit`.
+*   **v0.7: Confirmation Protocol** – Defined how future execution would request confirmation based on risk and policy.
+*   **v0.6: Execution Policy Gate** – Established deterministic PASS/HOLD/BLOCK logic for all staged commands.
 *   **v0.5: Preview Mode** – A high-fidelity dry-run environment. Simulate the full execution lifecycle (understanding, planning, and risk assessment) without running any shell commands.
 *   **v0.4: Risk Engine** – A deterministic, rule-based system that classifies command risk levels (LOW, MEDIUM, HIGH, BLOCKED) using local safety heuristics.
 *   **v0.3: Plan Mode** – Generates structured, multi-step terminal action plans using local Ollama models.

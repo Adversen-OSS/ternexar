@@ -9,17 +9,22 @@ from ternexar.preview import handle_preview
 from ternexar.risk import risk_engine
 from ternexar.boot import boot_sequence
 from ternexar.config import CONFIG_FILE, config_manager
+from ternexar.audit import audit_manager
+from ternexar.runner import runner_skeleton
 from ternexar.ui import ui
 
 app = typer.Typer(
     name="tx",
-    help="TERNEXAR: A premium, terminal-native AI command center.",
+    help="TERNEXAR: A premium, safety-first AI command center.",
     rich_markup_mode="rich",
     no_args_is_help=False,
 )
 
 config_app = typer.Typer(help="Manage TERNEXAR configuration.")
 app.add_typer(config_app, name="config")
+
+audit_app = typer.Typer(help="Manage and view TERNEXAR safety audit logs.")
+app.add_typer(audit_app, name="audit")
 
 
 @app.callback(invoke_without_command=True)
@@ -88,6 +93,15 @@ def confirm(
     handle_confirm(command)
 
 
+@app.command(name="runner-check")
+def runner_check(
+    command: str = typer.Argument(..., help="The shell command to simulate through the runner."),
+):
+    """Simulate a command through the full safety pipeline without execution."""
+    result = runner_skeleton.evaluate(command)
+    ui.render_runner_check(result)
+
+
 @app.command()
 def risk(
     command: str = typer.Argument(..., help="The shell command to analyze for risk.")
@@ -134,3 +148,22 @@ def config_reset():
     """Reset configuration to defaults."""
     config_manager.reset()
     ui.info("Configuration reset to defaults.")
+
+
+@audit_app.command(name="view")
+def audit_view(
+    limit: int = typer.Option(10, "--limit", "-l", help="Number of records to show.")
+):
+    """View recent safety audit logs."""
+    records = audit_manager.get_records(limit=limit)
+    ui.render_audit_log(records)
+
+
+@audit_app.command(name="clear")
+def audit_clear():
+    """Securely clear the local audit log."""
+    if typer.confirm("Are you sure you want to clear the audit log?"):
+        audit_manager.clear_logs()
+        ui.success("Audit log cleared successfully.")
+    else:
+        ui.info("Operation cancelled.")
