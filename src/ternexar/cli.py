@@ -13,6 +13,8 @@ from ternexar.audit import audit_manager
 from ternexar.do import handle_do
 from ternexar.analyze import handle_analyze
 from ternexar.operator import handle_operator
+from ternexar.locator import locator
+from ternexar.workspace import workspace_manager
 from ternexar.runner import runner_skeleton
 from ternexar.ui import ui
 
@@ -48,6 +50,33 @@ def main(
 def operator():
     """Enter the interactive TERNEXAR Operator Composer."""
     handle_operator()
+
+
+@app.command()
+def locate(
+    name: str = typer.Argument(..., help="The project name or fragment to search for.")
+):
+    """Search safe user folders for matching project directories."""
+    results = locator.locate(name)
+    ui.render_locate_results(name, results)
+
+
+@app.command()
+def view(
+    path: str = typer.Argument(..., help="The path to the project to view.")
+):
+    """Show a read-only, safe project folder tree."""
+    tree_data = workspace_manager.get_tree(path)
+    ui.render_workspace_tree(path, tree_data)
+
+
+@app.command()
+def scan(
+    path: str = typer.Argument(..., help="The path to the project to scan.")
+):
+    """Read safe metadata and detect project type and dependencies."""
+    scan_data = workspace_manager.scan(path)
+    ui.render_scan_report(scan_data)
 
 
 @app.command()

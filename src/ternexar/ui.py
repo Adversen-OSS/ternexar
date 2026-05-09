@@ -530,5 +530,96 @@ class UI:
         self.console.print(f"[dim]Note: Staged commands would require confirmation in a future execution module.[/]")
         self.console.print("\n")
 
+    def render_locate_results(self, query: str, results: list):
+        """Render the results of a project search."""
+        self.console.print(f"\n[brand]PROJECT LOCATOR[/]")
+        self.console.print(f"[dim]Query: {query}[/]\n")
+
+        if not results:
+            self.console.print("[yellow]No projects found matching that query in safe roots.[/]\n")
+            return
+
+        table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 2))
+        table.add_column("Project Name", style="bold white")
+        table.add_column("Path", style="cyan")
+        table.add_column("Match", style="dim")
+
+        for res in results:
+            table.add_row(
+                res["name"],
+                res["path"],
+                res["match_type"]
+            )
+
+        self.console.print(table)
+        self.console.print(f"\n[dim]Found {len(results)} results. Use 'tx view <path>' to inspect.[/]\n")
+
+    def render_workspace_tree(self, path: str, tree_data: dict):
+        """Render a visual tree of the workspace."""
+        from rich.tree import Tree
+        
+        self.console.print(f"\n[brand]WORKSPACE VIEWER[/]")
+        self.console.print(f"[dim]Path: {path}[/]\n")
+
+        if "error" in tree_data:
+            self.error(tree_data["error"])
+            return
+
+        def add_to_tree(rich_tree, data):
+            for child in data.get("children", []):
+                if child["type"] == "directory":
+                    style = f"bold {PURPLE}"
+                    branch = rich_tree.add(f"[bold {CYAN}]📁 {child['name']}[/]", style=style)
+                    add_to_tree(branch, child)
+                else:
+                    rich_tree.add(f"📄 {child['name']}")
+
+        root_tree = Tree(f"[bold white]📂 {tree_data['name']}[/]")
+        add_to_tree(root_tree, tree_data)
+        
+        self.console.print(root_tree)
+        self.console.print("\n[dim]Hidden and generated folders were skipped for safety.[/]\n")
+
+    def render_scan_report(self, scan_data: dict):
+        """Render a detailed project scan report."""
+        self.console.print(f"\n[brand]WORKSPACE INTELLIGENCE[/]")
+        
+        if "error" in scan_data:
+            self.error(scan_data["error"])
+            return
+
+        # Project Info Panel
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="dim cyan")
+        table.add_column("Value")
+
+        type_color = {
+            "PYTHON": "bold blue",
+            "NODE": "bold green",
+            "RUST": "bold orange1",
+            "GO": "bold cyan",
+            "JAVA": "bold red",
+            "STATIC_WEB": "bold yellow"
+        }.get(scan_data["project_type"], "white")
+
+        table.add_row("Path", scan_data["path"])
+        table.add_row("Project Type", f"[{type_color}]{scan_data['project_type']}[/]")
+        table.add_row("Important Files", ", ".join(scan_data["important_files"]))
+        
+        self.console.print(Panel(table, border_style=CYAN))
+
+        if scan_data.get("readme_preview"):
+            self.console.print(f"\n[bold white]README PREVIEW[/]")
+            self.console.print(Panel(
+                Text(scan_data["readme_preview"], style="dim italic"),
+                border_style="dim white",
+                padding=(0, 1)
+            ))
+
+        if scan_data.get("sensitive_files_skipped"):
+            self.console.print(f"\n[info]✔ Sensitive files were skipped and not read.[/]")
+        
+        self.console.print("\n")
+
 
 ui = UI()
