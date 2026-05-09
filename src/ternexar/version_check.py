@@ -78,8 +78,8 @@ class VersionCheckRegistry:
 
 version_check_registry = VersionCheckRegistry()
 
-def handle_version_check(tool_name: str):
-    """Safely check the version of a supported tool."""
+def get_version_check_data(tool_name: str) -> Dict:
+    """Safely get version check data for a supported tool without rendering UI."""
     profile = version_check_registry.get_profile(tool_name)
     
     data = {
@@ -97,9 +97,7 @@ def handle_version_check(tool_name: str):
     }
 
     if not profile:
-        data["status"] = CheckStatus.UNKNOWN_TOOL
-        ui.render_version_check_result(data)
-        return
+        return data
 
     data["normalized_tool"] = profile.name
     data["executable"] = profile.executable
@@ -107,8 +105,7 @@ def handle_version_check(tool_name: str):
     if profile.status == CheckStatus.NEEDS_VERIFICATION:
         data["status"] = CheckStatus.NEEDS_VERIFICATION
         data["notes"] = "Trusted version-check profile not yet verified for this tool."
-        ui.render_version_check_result(data)
-        return
+        return data
 
     # 1. Existence Check
     exec_path = shutil.which(profile.executable)
@@ -116,8 +113,7 @@ def handle_version_check(tool_name: str):
         data["status"] = CheckStatus.NOT_INSTALLED
         data["notes"] = f"Executable '{profile.executable}' not found in PATH."
         _log_audit(data)
-        ui.render_version_check_result(data)
-        return
+        return data
 
     # 2. Safety Check
     cmd_str = " ".join(profile.version_command)
@@ -136,8 +132,7 @@ def handle_version_check(tool_name: str):
         data["status"] = CheckStatus.REFUSED
         data["notes"] = f"Safety policy refused execution: {gate_result.risk_level.value}/{gate_result.gate_decision.value}"
         _log_audit(data)
-        ui.render_version_check_result(data)
-        return
+        return data
 
     # 3. Execution
     try:
@@ -168,6 +163,11 @@ def handle_version_check(tool_name: str):
         data["notes"] = f"Unexpected error during execution: {str(e)}"
 
     _log_audit(data)
+    return data
+
+def handle_version_check(tool_name: str):
+    """Safely check the version of a supported tool and render UI."""
+    data = get_version_check_data(tool_name)
     ui.render_version_check_result(data)
 
 def _log_audit(data: Dict):

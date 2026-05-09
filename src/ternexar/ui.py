@@ -790,6 +790,81 @@ class UI:
         self.console.print(Align.center("[bold red]VERSION CHECK ONLY - NO INSTALL COMMANDS EXECUTED[/]"))
         self.console.print("=" * 60 + "\n")
 
+    def render_install_preflight_report(self, data: dict):
+        """Render a comprehensive installer preflight readiness report."""
+        self.console.print(f"\n[brand]INSTALLER PREFLIGHT REPORT[/]")
+        
+        # High-visibility disclaimer
+        self.console.print("\n" + "=" * 80)
+        self.console.print(Align.center("[bold red]INSTALL PREFLIGHT ONLY - NO INSTALL COMMANDS EXECUTED[/]"))
+        self.console.print("=" * 80 + "\n")
+
+        # Tool & Status Summary
+        summary_table = Table(show_header=False, box=None, padding=(0, 2))
+        summary_table.add_column("Key", style="dim cyan")
+        summary_table.add_column("Value")
+
+        version_status = data["version_status"].value
+        v_color = "bold green" if version_status == "INSTALLED" else "bold yellow"
+        
+        summary_table.add_row("Tool Requested", data["requested_tool"])
+        summary_table.add_row("Normalized Tool", f"[bold white]{data['normalized_tool']}[/]")
+        summary_table.add_row("Current Status", f"[{v_color}]{version_status}[/]")
+        
+        if data["version_output"]:
+            summary_table.add_row("Installed Version", f"[bold white]{data['version_output']}[/]")
+        
+        summary_table.add_row("Detected OS", data["os_key"])
+        summary_table.add_row("Profile Status", f"[bold white]{data['profile_status'].value}[/]")
+        
+        self.console.print(Panel(summary_table, border_style=CYAN, title="Preflight Summary"))
+
+        # Commands Preview
+        if data["steps"]:
+            self.console.print(f"\n[bold white]FUTURE INSTALLER COMMANDS (ANALYSIS ONLY)[/]")
+            cmd_table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 1))
+            cmd_table.add_column("Command", style="bold white")
+            cmd_table.add_column("Risk", width=10)
+            cmd_table.add_column("Gate", width=10)
+            cmd_table.add_column("Confirmation", width=25)
+
+            for step in data["steps"]:
+                risk_color = step["risk_level"].color
+                gate_color = "bold green" if step["gate_decision"].value == "PASS" else "bold yellow" if step["gate_decision"].value == "HOLD" else "bold red"
+                
+                cmd_table.add_row(
+                    step["command"],
+                    f"[{risk_color}]{step['risk_level'].value}[/]",
+                    f"[{gate_color}]{step['gate_decision'].value}[/]",
+                    f"[dim]{step['confirmation_mode']}[/]"
+                )
+            self.console.print(cmd_table)
+        
+        # Final Verdict
+        verdict = data["verdict"].value
+        verdict_style = {
+            "ALREADY_INSTALLED": "bold green",
+            "READY_FOR_FUTURE_CONFIRMED_EXECUTION": "bold green",
+            "NOT_READY_NEEDS_VERIFICATION": "bold cyan",
+            "NOT_READY_UNKNOWN_TOOL": "bold red",
+            "NOT_READY_UNSUPPORTED_OS": "bold red",
+            "REFUSED": "bold red",
+            "CHECK_FAILED": "bold red"
+        }.get(verdict, "white")
+
+        self.console.print("\n")
+        self.console.print(Panel(
+            Align.center(Text(verdict, style=verdict_style)),
+            title="[bold sky_blue1]FINAL PREFLIGHT VERDICT[/]",
+            border_style="sky_blue1",
+            padding=(1, 2)
+        ))
+
+        if data["notes"]:
+            self.console.print(f"[dim]Notes: {data['notes']}[/]")
+
+        self.console.print(f"\n[dim]Note: Future TERNEXAR v2.0 will enable confirmed execution for verified profiles.[/]\n")
+
     def render_workspace_list(self, roots: list):
         """Render the list of custom workspace roots."""
         from pathlib import Path

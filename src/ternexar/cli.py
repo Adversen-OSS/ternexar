@@ -20,6 +20,7 @@ from ternexar.runner import runner_skeleton
 from ternexar.workspace_config import workspace_config
 from ternexar.installer_profiles import profile_registry, ProfileStatus, handle_install_preview
 from ternexar.version_check import handle_version_check
+from ternexar.install_preflight import handle_install_preflight
 from ternexar.ui import ui
 
 app = typer.Typer(
@@ -109,6 +110,14 @@ def version_check(
 ):
     """Safely check if a tool is installed and report its version."""
     handle_version_check(tool)
+
+
+@app.command(name="install-preflight")
+def install_preflight(
+    tool: str = typer.Argument(..., help="The tool name to run a preflight readiness check for (e.g., 'python3').")
+):
+    """Run a safe installer readiness check before future real execution."""
+    handle_install_preflight(tool)
 
 
 @workspace_app.command("add")

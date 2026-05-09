@@ -1,8 +1,19 @@
-# TERNEXAR (v1.8.0)
+# TERNEXAR (v1.9.0)
 
 **A stable, high-integrity terminal safety operator.**
 
 TERNEXAR is a command-line interface designed to bridge the gap between local LLMs and terminal automation. It provides a deterministic safety layer that ensures terminal AI remains helpful, transparent, and—above all—safe.
+
+## v1.9: Installer Preflight
+
+Release v1.9 introduces a comprehensive **Installer Preflight** report that combines version checking and installer previewing into a single readiness verdict.
+
+- **Ready-for-Execution Audit:** Performs a complete preflight report before future real installation capabilities.
+- **Deterministic Verdicts:** Clear readiness status (e.g., `READY_FOR_FUTURE_CONFIRMED_EXECUTION` or `ALREADY_INSTALLED`).
+- **Safety Pipeline Integration:** Every installer step is automatically evaluated by TERNEXAR's Risk, Gate, and Confirmation engines.
+- **No-Execution Guarantee:** Explicitly refuses to execute any installation commands, ensuring system integrity in v1.9.
+- **Operator Integration:** Natural requests like "check install readiness for python 3" or "preflight nodejs" are automatically routed to the safe preflight interface.
+- **Audit Logging:** Every preflight check is recorded in the local safety audit log with its final verdict.
 
 ## v1.8: Installer Version Check
 
@@ -118,6 +129,12 @@ Analyze a project folder and generate a safe setup preview.
 tx setup-preview "/home/teju/ternexar"
 ```
 
+### `tx install-preflight`
+Run a safe installer readiness check before future real execution.
+```bash
+tx install-preflight "python3"
+```
+
 ### `tx install-preview`
 Preview deterministic installation steps for a supported tool.
 ```bash
@@ -198,21 +215,6 @@ tx preview "Install docker and run hello-world"
 ## Safety Features
 
 *   **Risk Engine:** Classifies commands into `LOW`, `MEDIUM`, `HIGH`, and `BLOCKED`.
-*   **Execution Gate:** Maps risk levels to strict policies (PASS, HOLD, BLOCK).
-*   **No-Shell Execution:** Uses `subprocess.run(shell=False)` to prevent shell-injection.
-*   **Timeout Protection:** Prevents runaway commands from hanging your terminal.
-
-## Documentation
-- [LICENSE](LICENSE)
-- [SECURITY.md](SECURITY.md)
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [CHANGELOG.md](CHANGELOG.md)
-- [ROADMAP.md](ROADMAP.md)
-- [Safety Demonstration](examples/safety_demo.md)
-
----
-*Built for the local-first era.*
-assifies commands into `LOW`, `MEDIUM`, `HIGH`, and `BLOCKED`.
 *   **Execution Gate:** Maps risk levels to strict policies (PASS, HOLD, BLOCK).
 *   **No-Shell Execution:** Uses `subprocess.run(shell=False)` to prevent shell-injection.
 *   **Timeout Protection:** Prevents runaway commands from hanging your terminal.

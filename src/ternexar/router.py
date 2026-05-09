@@ -23,6 +23,7 @@ class Intent(Enum):
     VIEW = "VIEW"
     ANALYZE = "ANALYZE"
     VERSION_CHECK = "VERSION_CHECK"
+    INSTALL_PREFLIGHT = "INSTALL_PREFLIGHT"
     INSTALL_REQUEST = "INSTALL_REQUEST"
     REFUSE = "REFUSE"
     UNKNOWN = "UNKNOWN"
@@ -31,6 +32,7 @@ class Router:
     def __init__(self):
         self.question_starters = {"what", "how", "explain", "why", "who", "where", "when", "can", "is", "are"}
         self.system_install_keywords = {"install python", "install node", "install docker", "install claude", "install codex", "install rust", "install go", "install java"}
+        self.preflight_keywords = {"preflight", "install readiness", "ready to install", "ready for install"}
         self.version_check_keywords = {"version", "installed?", "is installed", "is node installed", "is python installed", "is npm installed"}
         self.setup_keywords = {"setup", "prepare", "install dependencies", "run this project"}
         self.locate_keywords = {"find", "locate", "where is", "where is my", "search"}
@@ -49,11 +51,15 @@ class Router:
         if analysis.level in [RiskLevel.HIGH, RiskLevel.BLOCKED]:
             return Intent.REFUSE
 
-        # 2. Installer/System Install Request
+        # 2. Installer Preflight Request
+        if any(kw in clean_text for kw in self.preflight_keywords):
+            return Intent.INSTALL_PREFLIGHT
+
+        # 3. Installer/System Install Request
         if any(kw in clean_text for kw in self.system_install_keywords):
             return Intent.INSTALL_REQUEST
         
-        # 3. Version Check Request
+        # 4. Version Check Request
         if any(kw in clean_text for kw in self.version_check_keywords):
             # Special case: "install python" should be INSTALL_REQUEST, not VERSION_CHECK
             if "install " not in clean_text:
@@ -94,6 +100,27 @@ class Router:
 
         # 10. Default to PLAN for general tasks
         return Intent.PLAN
+
+    def extract_preflight_tool(self, text: str) -> Optional[str]:
+        """Extract a likely tool name from a preflight request."""
+        clean_text = text.lower().strip()
+        
+        # "preflight <tool>"
+        match = re.search(r"preflight\s+([\w\s\.\-3]+)", clean_text)
+        if match:
+            return match.group(1).strip()
+            
+        # "check install readiness for <tool>"
+        match = re.search(r"check\s+install\s+readiness\s+for\s+([\w\s\.\-3]+)", clean_text)
+        if match:
+            return match.group(1).strip()
+            
+        # "is <tool> ready to install?"
+        match = re.search(r"is\s+([\w\s\.\-3]+)\s+ready\s+to\s+install", clean_text)
+        if match:
+            return match.group(1).strip()
+            
+        return None
 
     def extract_tool_name(self, text: str) -> Optional[str]:
         """Extract a likely tool name from an install request."""

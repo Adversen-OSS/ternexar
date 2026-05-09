@@ -1,6 +1,6 @@
 [project]
 name = "ternexar"
-version = "1.8.0"
+version = "1.9.0"
 description = "A premium, safety-first AI command center."
 readme = "README.md"
 requires-python = ">=3.10"
