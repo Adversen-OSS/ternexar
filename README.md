@@ -1,8 +1,18 @@
-# TERNEXAR (v1.6.0)
+# TERNEXAR (v1.7.0)
 
 **A stable, high-integrity terminal safety operator.**
 
 TERNEXAR is a command-line interface designed to bridge the gap between local LLMs and terminal automation. It provides a deterministic safety layer that ensures terminal AI remains helpful, transparent, and—above all—safe.
+
+## v1.7: Installer Profiles Preview
+
+Release v1.7 introduces a safe, deterministic way to preview system tool installations.
+
+- **Installer Preview:** View deterministic installation steps for tools like `python3` and `nodejs` (`tx install-preview`).
+- **Safety Pipeline Integration:** Every suggested installer command is automatically evaluated by TERNEXAR's Risk, Gate, and Confirmation engines.
+- **Deterministic Profiles:** Uses hardcoded, community-verified profiles mapped to your specific OS (Ubuntu/Debian-like Linux supported initially).
+- **No-Execution Guarantee:** Clearly displays suggested commands and their risk levels without executing anything.
+- **Operator Integration:** Natural requests like "install python 3" are automatically routed to the safe preview interface.
 
 ## v1.6: Natural Command Routing
 
@@ -95,6 +105,12 @@ tx workspace list
 Analyze a project folder and generate a safe setup preview.
 ```bash
 tx setup-preview "/home/teju/ternexar"
+```
+
+### `tx install-preview`
+Preview deterministic installation steps for a supported tool.
+```bash
+tx install-preview "python3"
 ```
 
 ### `tx analyze`

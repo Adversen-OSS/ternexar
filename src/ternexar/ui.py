@@ -60,7 +60,7 @@ class UI:
             self.console.print(text)
 
         self.console.print(
-            "[dim]local-first AI command center • Ollama-ready • v1.6[/]\n"
+            "[dim]local-first AI command center • Ollama-ready • v1.7[/]\n"
         )
 
     def render_operator_routing_feedback(self, intent: str, route: str, safety: str):
@@ -692,6 +692,64 @@ class UI:
         self.console.print(table)
         self.console.print("\n[dim]Use 'tx risk <command>' to see detailed safety analysis.[/]")
         self.console.print("[dim]Use 'tx view <path>' to explore project structure safely.[/]\n")
+
+    def render_install_preview(self, data: dict):
+        """Render a deterministic installer profile preview report."""
+        self.console.print(f"\n[brand]INSTALLER PROFILE PREVIEW[/]")
+        
+        # Tool Info
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="dim cyan")
+        table.add_column("Value")
+
+        table.add_row("Tool Requested", data["requested_tool"])
+        table.add_row("Profile Name", f"[bold white]{data['profile_name']}[/]")
+        table.add_row("Detected OS", data["detected_os"])
+        table.add_row("Status", f"[bold white]{data['status']}[/]")
+        
+        self.console.print(Panel(table, border_style=CYAN))
+
+        if data.get("global_warnings"):
+            for w in data["global_warnings"]:
+                self.warning(w)
+
+        self.console.print("\n" + "=" * 60)
+        self.console.print(Align.center("[bold red]INSTALL PREVIEW ONLY - NO COMMANDS EXECUTED[/]"))
+        self.console.print("=" * 60 + "\n")
+
+        if data["status"] == "AVAILABLE" and data.get("steps"):
+            table = Table(show_header=True, header_style=f"bold {PURPLE}", box=None, padding=(0, 1))
+            table.add_column("Command", style="bold white")
+            table.add_column("Risk", width=10)
+            table.add_column("Gate", width=10)
+            table.add_column("Confirmation", width=25)
+
+            for step in data["steps"]:
+                risk_color = step["risk_level"].color
+                gate_color = "bold green" if step["gate_decision"] == "PASS" else "bold yellow" if step["gate_decision"] == "HOLD" else "bold red"
+                
+                table.add_row(
+                    step["command"],
+                    f"[{risk_color}]{step['risk_level'].value}[/]",
+                    f"[{gate_color}]{step['gate_decision']}[/]",
+                    f"[dim]{step['confirmation_mode']}[/]"
+                )
+
+            self.console.print(table)
+
+            if data.get("verification_command"):
+                self.console.print(f"\n[info]Verification Command:[/] [bold white]{data['verification_command']}[/]")
+        
+        elif data["status"] == "NEEDS_VERIFICATION":
+            self.warning_panel(
+                "No trusted installer profile is available yet for this tool on your OS.\n"
+                "Suggestions are withheld for safety until a deterministic profile is verified.",
+                title="VERIFICATION REQUIRED"
+            )
+        elif data["status"] == "UNKNOWN_TOOL":
+            self.error("Unknown tool. TERNEXAR does not have a profile for this request.")
+        
+        self.console.print(f"\n[dim]Note: Future TERNEXAR v2.0 will enable confirmed execution for verified profiles.[/]\n")
 
     def render_workspace_list(self, roots: list):
         """Render the list of custom workspace roots."""

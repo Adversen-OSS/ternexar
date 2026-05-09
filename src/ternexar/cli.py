@@ -1,7 +1,7 @@
 import typer
 
-from ternexar.confirm import handle_confirm
-from ternexar.gate import handle_gate
+from ternexar.confirm import handle_confirm, confirm_engine
+from ternexar.gate import handle_gate, gate_engine
 from ternexar import __version__
 from ternexar.ask import handle_ask
 from ternexar.plan import handle_plan
@@ -18,6 +18,7 @@ from ternexar.workspace import workspace_manager
 from ternexar.setup_assistant import setup_assistant
 from ternexar.runner import runner_skeleton
 from ternexar.workspace_config import workspace_config
+from ternexar.installer_profiles import profile_registry, ProfileStatus, handle_install_preview
 from ternexar.ui import ui
 
 app = typer.Typer(
@@ -91,6 +92,14 @@ def setup_preview(
     """Analyze a project folder and generate a safe setup preview."""
     setup_data = setup_assistant.get_preview(path)
     ui.render_setup_preview(setup_data)
+
+
+@app.command(name="install-preview")
+def install_preview(
+    tool: str = typer.Argument(..., help="The tool name to preview installation for (e.g., 'python3').")
+):
+    """Preview deterministic installation steps for a supported tool."""
+    handle_install_preview(tool)
 
 
 @workspace_app.command("add")

@@ -16,6 +16,7 @@ from ternexar.locator import locator
 from ternexar.setup_assistant import setup_assistant
 from ternexar.workspace import workspace_manager
 from ternexar.analyze import handle_analyze
+from ternexar.installer_profiles import handle_install_preview
 from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.layout.utils import explode_text_fragments
 
@@ -119,9 +120,9 @@ def route_operator_input(text: str):
             ui.render_operator_routing_feedback("ANALYZE", f"tx analyze \"{text}\"", "Safe fix mode")
             handle_analyze(text)
         elif intent == Intent.INSTALL_REQUEST:
-            ui.render_operator_routing_feedback("INSTALL_REQUEST", "REFUSED", "Not enabled in v1.6")
-            ui.warning("Install execution is not enabled in v1.6. This request can be previewed only.")
-            ui.info("No commands executed.")
+            tool = router.extract_tool_name(text) or "unknown"
+            ui.render_operator_routing_feedback("INSTALL_REQUEST", f"tx install-preview {tool}", "Preview only")
+            handle_install_preview(tool)
         elif intent == Intent.REFUSE:
             ui.render_refusal(text, "Dangerous command or blocked pattern detected.")
         else:

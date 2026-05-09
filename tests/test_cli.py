@@ -7,7 +7,7 @@ runner = CliRunner()
 def test_version():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "TERNEXAR v1.6.0" in result.stdout
+    assert "TERNEXAR v1.7.0" in result.stdout
 
 def test_help():
     result = runner.invoke(app, ["--help"])

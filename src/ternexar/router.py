@@ -87,6 +87,19 @@ class Router:
         # 10. Default to PLAN for general tasks
         return Intent.PLAN
 
+    def extract_tool_name(self, text: str) -> Optional[str]:
+        """Extract a likely tool name from an install request."""
+        clean_text = text.lower().strip()
+        
+        # Look for "install <tool>" pattern
+        match = re.search(r"install\s+([\w\s\.\-3]+)", clean_text)
+        if match:
+            tool = match.group(1).strip()
+            # Basic cleanup: remove trailing fluff like "for me", "please", etc.
+            tool = re.sub(r"\s+(for me|please|now|on my system)$", "", tool)
+            return tool
+        return None
+
     def extract_target(self, text: str) -> Optional[str]:
         """Extract a likely project name or path target from the text."""
         clean_text = text.lower()
