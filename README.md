@@ -1,248 +1,60 @@
-# TERNEXAR (v2.0.0)
+<p align="center">
+  <img src="assets/ternexar-logo.png" width="130" alt="TERNEXAR Logo" />
+</p>
 
-**A stable, high-integrity terminal safety operator.**
+<h1 align="center">TERNEXAR</h1>
 
-TERNEXAR is a command-line interface designed to bridge the gap between local LLMs and terminal automation. It provides a deterministic safety layer that ensures terminal AI remains helpful, transparent, and—above all—safe.
+<p align="center">
+  Autonomous execution engine for terminal workflows, agentic tasks, and developer automation.
+</p>
 
-## v2.0: Confirmed Installer Execution
-
-Release v2.0 introduces **Confirmed Installer Execution**, allowing TERNEXAR to safely execute verified installer profiles for common development tools under strict safety constraints.
-
-- **Verified Profile Execution:** Execute trusted installer profiles for tools like `python3` and `nodejs` on supported systems.
-- **Two-Step Strong Confirmation:** Mandatory two-step confirmation (boolean choice + exact string match) for all high-risk installations.
-- **Subprocess Safety Model:** Strict use of `shell=False`, list arguments, and no shell metacharacters for execution.
-- **Mandatory Preflight Gate:** Installations only proceed if `tx install-preflight` issues a `READY_FOR_FUTURE_CONFIRMED_EXECUTION` verdict.
-- **Post-Install Verification:** Automatically verifies the installed version after the execution sequence finishes.
-- **Audit Compliance:** Detailed logging of every phase (Request, Preflight, Confirmation, Execution, Verification).
-
-## v1.9: Installer Preflight
-
-Release v1.9 introduces a comprehensive **Installer Preflight** report that combines version checking and installer previewing into a single readiness verdict.
-
-- **Ready-for-Execution Audit:** Performs a complete preflight report before future real installation capabilities.
-- **Deterministic Verdicts:** Clear readiness status (e.g., `READY_FOR_FUTURE_CONFIRMED_EXECUTION` or `ALREADY_INSTALLED`).
-- **Safety Pipeline Integration:** Every installer step is automatically evaluated by TERNEXAR's Risk, Gate, and Confirmation engines.
-- **No-Execution Guarantee:** Explicitly refuses to execute any installation commands, ensuring system integrity in v1.9.
-- **Operator Integration:** Natural requests like "check install readiness for python 3" or "preflight nodejs" are automatically routed to the safe preflight interface.
-- **Audit Logging:** Every preflight check is recorded in the local safety audit log with its final verdict.
-
-## v1.8: Installer Version Check
-
-Release v1.8 introduces a safe, deterministic way to check if trusted tools are installed and report their versions.
-
-- **Safe Version Check:** Verify the presence and version of tools like `python3`, `node`, and `npm` (`tx version-check`).
-- **Deterministic Verification:** Uses hardcoded, non-destructive commands (e.g., `python3 --version`) from verified profiles.
-- **Safety Pipeline Integration:** Every version check command is automatically evaluated by TERNEXAR's Risk, Gate, and Confirmation engines.
-- **No-Install Guarantee:** Explicitly refuses to execute any installation commands, ensuring system integrity.
-- **Operator Integration:** Natural requests like "is node installed?" or "check python version" are automatically routed to the safe version-check interface.
-- **Audit Logging:** Every check is recorded in the local safety audit log.
-
-## v1.7: Installer Profiles Preview
-
-Release v1.7 introduces a safe, deterministic way to preview system tool installations.
-
-- **Installer Preview:** View deterministic installation steps for tools like `python3` and `nodejs` (`tx install-preview`).
-- **Safety Pipeline Integration:** Every suggested installer command is automatically evaluated by TERNEXAR's Risk, Gate, and Confirmation engines.
-- **Deterministic Profiles:** Uses hardcoded, community-verified profiles mapped to your specific OS (Ubuntu/Debian-like Linux supported initially).
-- **No-Execution Guarantee:** Clearly displays suggested commands and their risk levels without executing anything.
-- **Operator Integration:** Natural requests like "install python 3" are automatically routed to the safe preview interface.
-
-## v1.6: Natural Command Routing
-
-Release v1.6 introduces a seamless natural language interface to TERNEXAR's safety-first pipeline.
-
-- **Natural Operator Routing:** The `tx operator` now understands natural requests like "setup this project", "scan my web project", or "fix import error".
-- **Deterministic Intent Mapping:** Safely routes requests to existing components (Locator, Workspace Viewer, Setup Assistant, Safe Fix Mode).
-- **Target Extraction:** Automatically identifies project names and paths from natural text.
-- **Install Request Safety:** Intercepts system installation requests (e.g., "install python") and provides clear, preview-only feedback without execution.
-- **Transparent Feedback:** Shows detected intent, routed action, and safety decisions in real-time.
-
-## v1.5: Safe Setup Assistant
-
-Release v1.5 introduces a proactive project setup preview system.
-
-- **Setup Preview:** Analyzes projects and generates safe setup instructions (`tx setup-preview`).
-- **No-Execution Guarantee:** Displays what commands *would* run without actually executing them.
-- **Project Intelligence:** Detects Python, Node, Rust, and Go project structures.
-
-## Safety & Philosophy
-
-TERNEXAR operates on a strict **Ask → Plan → Risk → Execute** pipeline. 
-
-1. **Local-First:** All intelligence is powered by local models (via Ollama). No data ever leaves your machine.
-2. **Deterministic Risk:** Safety is not an "opinion" generated by an LLM. It is enforced by a rule-based engine that identifies dangerous patterns.
-3. **Auditability:** Every safety decision and execution attempt is logged to a local, tamper-evident audit file.
-
-## v1.4: Custom Workspace Roots
-
-Release v1.4 introduces custom project discovery and operator integration.
-
-- **Workspace Roots:** Add custom safe search roots for project discovery (`tx workspace add`).
-- **Integrated Operator:** Locate and inspect projects using natural language in the operator composer.
-- **Strict Path Validation:** Refuses system paths, hidden folders, and directories outside the user home.
-- **No-Bloat Search:** Fast, recursive discovery without background indexing.
-
-## v1.3: Safe Workspace Discovery
-
-Release v1.3 introduces read-only tools to find and inspect local projects safely.
-
-- **Project Locator:** Search safe user folders for matching project directories (`tx locate`).
-- **Workspace Viewer:** Show a read-only, safe project folder tree (`tx view`).
-- **Project Intelligence:** Detect project type and dependencies without executing code (`tx scan`).
-- **Strict Guardrails:** Blocks access to sensitive files like `.env`, `*.key`, and system directories.
-
-## v1.2: Safe Fix Mode
-
-Release v1.2 introduces a proactive analysis and safe patching system.
-
-- **Deterministic Analysis:** Automatically detects common Python issues like `ModuleNotFoundError` and `ImportError`.
-- **Safe Patching:** Suggests surgical patches (e.g., adding a dependency to `requirements.txt`).
-- **Unified Diff Preview:** Shows exactly what will change before applying any modifications.
-- **Explicit Confirmation:** Requires `y/N` confirmation for every patch.
-- **Atomic Writes & Backups:** Creates safe backups in `.ternexar/backups/` and applies changes atomically.
-- **Strict Guardrails:** Blocks modifications to `.env`, hidden files, or dangerous file paths.
-
-## v1.1: The Operator Composer
-
-Release v1.1 introduces an interactive orchestration layer.
-
-- **Operator Composer:** A modern, interactive terminal input bar (`tx operator`) for natural language orchestration.
-- **Context Awareness:** Include file context safely using `@path/to/file` in the operator.
-- **Verified Execution:** Safely execute LOW-risk commands (e.g., `ls`, `git status`) via a strict allowlist.
-- **Robust Guardrails:** Blocks dangerous commands (e.g., `rm -rf /`, `cat .env`) and prevents shell-injection.
-- **Full Observability:** Track every action with `tx audit`.
-
-## Installation
-
-Ensure you have [Ollama](https://ollama.ai/) installed and running locally.
-
-```bash
-# Clone the repository
-git clone https://github.com/ternexar/ternexar.git
-cd ternexar
-
-# Install the package
-pip install -e .
-```
-
-## Core Commands
-
-### `tx install`
-Execute a verified installer profile after preflight and strong confirmation.
-```bash
-tx install "python3"
-```
-
-### `tx workspace`
-Manage custom workspace roots (add, list, remove, clear).
-```bash
-tx workspace add "~/my-projects"
-tx workspace list
-```
-
-### `tx setup-preview`
-Analyze a project folder and generate a safe setup preview.
-```bash
-tx setup-preview "/home/teju/ternexar"
-```
-
-### `tx install-preflight`
-Run a safe installer readiness check before future real execution.
-```bash
-tx install-preflight "python3"
-```
-
-### `tx install-preview`
-Preview deterministic installation steps for a supported tool.
-```bash
-tx install-preview "python3"
-```
-
-### `tx version-check`
-Safely check if a tool is installed and report its version.
-```bash
-tx version-check "python3"
-```
-
-### `tx analyze`
-Analyze a broken Python app or error and suggest safe patches.
-```bash
-tx analyze "ModuleNotFoundError: No module named requests"
-```
-
-### `tx locate`
-Search safe user folders for matching project directories.
-```bash
-tx locate "ternexar"
-```
-
-### `tx view`
-Show a read-only, safe project folder tree.
-```bash
-tx view "/home/teju/ternexar"
-```
-
-### `tx scan`
-Read safe metadata and detect project type and dependencies.
-```bash
-tx scan "/home/teju/ternexar"
-```
-
-### `tx operator`
-Enter the interactive Operator Composer for natural language orchestration.
-```bash
-tx operator
-> setup this project
-> scan my ternexar project
-> fix ModuleNotFoundError: No module named requests
-> ls -la
-```
-
-### `tx ask`
-Query local models for quick answers or command syntax.
-```bash
-tx ask "How do I list all files larger than 100MB in the current directory?"
-```
-
-### `tx plan`
-Transform a natural language goal into a structured sequence of commands.
-```bash
-tx plan "Set up a local postgres container with a persistent volume"
-```
-
-### `tx do`
-Safely execute a LOW-risk, allowlisted command after safety validation.
-```bash
-tx do "ls -la"
-tx do "git status"
-```
-
-### `tx audit view`
-Inspect the local safety audit trail.
-```bash
-tx audit view --limit 5
-```
-
-### `tx preview`
-Dry-run a task to see exactly which commands would be staged and their risk levels.
-```bash
-tx preview "Install docker and run hello-world"
-```
-
-## Safety Features
-
-*   **Risk Engine:** Classifies commands into `LOW`, `MEDIUM`, `HIGH`, and `BLOCKED`.
-*   **Execution Gate:** Maps risk levels to strict policies (PASS, HOLD, BLOCK).
-*   **No-Shell Execution:** Uses `subprocess.run(shell=False)` to prevent shell-injection.
-*   **Timeout Protection:** Prevents runaway commands from hanging your terminal.
-
-## Documentation
-- [LICENSE](LICENSE)
-- [SECURITY.md](SECURITY.md)
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [CHANGELOG.md](CHANGELOG.md)
-- [ROADMAP.md](ROADMAP.md)
-- [Safety Demonstration](examples/safety_demo.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Shell-Ready-4EAA25?logo=gnubash&logoColor=white" />
+  <img src="https://img.shields.io/badge/Status-Active-orange" />
+  <img src="https://img.shields.io/badge/License-MIT-green" />
+</p>
 
 ---
-*Built for the local-first era.*
+
+## What is TERNEXAR?
+
+**TERNEXAR** is an open-source autonomous execution engine designed to help developers plan, run, and manage terminal-based workflows through agent-style commands.
+
+It is built for developers who want a faster way to automate repetitive tasks, coordinate command execution, improve local workflows, and experiment with agentic developer tooling.
+
+---
+
+## Why TERNEXAR?
+
+Modern development involves many repeated terminal actions:
+
+- running tests
+- checking project health
+- fixing small issues
+- managing git workflows
+- executing multi-step tasks
+- preparing projects for release
+- coordinating local automation
+
+TERNEXAR aims to turn those workflows into a cleaner, smarter, and more extensible execution layer.
+
+---
+
+## Features
+
+- Agent-style terminal workflow execution
+- Task planning and command routing
+- Developer automation foundation
+- Git-friendly project workflow
+- Python-first core
+- Shell integration support
+- Contributor-friendly open-source structure
+- Designed for future AI agent integration
+
+---
+
+## Quick Start
+
+```bash
+tx
