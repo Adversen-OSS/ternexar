@@ -16,6 +16,7 @@ from ternexar.locator import locator
 from ternexar.setup_assistant import setup_assistant
 from ternexar.workspace import workspace_manager
 from ternexar.analyze import handle_analyze
+from ternexar.recovery import handle_recover
 from ternexar.installer_profiles import handle_install_preview
 from ternexar.version_check import handle_version_check
 from ternexar.install_preflight import handle_install_preflight

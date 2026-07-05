@@ -111,3 +111,11 @@ def test_redaction():
     report = recovery_engine.recover(error)
     assert "[REDACTED_SENSITIVE_DATA]" in report.error_text
     assert "abcdef1234567890" not in report.error_text
+
+def test_composer_routes_to_handle_recover(mocker):
+    """Verify operator routes recovery intent to handle_recover correctly."""
+    mock_handle = mocker.patch("ternexar.composer.handle_recover")
+    mocker.patch("ternexar.ui.ui.render_operator_routing_feedback")
+    from ternexar.composer import route_operator_input
+    route_operator_input("recover this error")
+    mock_handle.assert_called_once_with("recover this error")
