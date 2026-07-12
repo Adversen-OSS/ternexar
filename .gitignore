@@ -1,29 +1,42 @@
-# Python
+```
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[cod]
 *.pyo
 *.pyd
+*.so
 *.egg-info/
-.eggs/
-dist/
-build/
 
-# Virtual environment
+# Dependencies
 .venv/
 venv/
-env/
+.env
+.env.local
+.env.*
 
-# Editor / OS
+# Logs and temp files
+*.log
+*.tmp
+
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# Project local backups
-backups/
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
 
-# Local config / secrets
-.env
-.env.*
-*.log
+# Distribution / packaging
+dist/
+build/
+*.egg
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Pytest cache
+.pytest_cache/
+```

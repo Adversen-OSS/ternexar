@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
-import toml
+try:
+    import tomli as toml  # Faster TOML parser
+except ImportError:
+    import toml  # Fallback to standard toml
 
 CONFIG_DIR = Path.home() / ".config" / "ternexar"
 CONFIG_FILE = CONFIG_DIR / "ternexar.toml"
@@ -21,6 +24,7 @@ DEFAULT_CONFIG = {
 class ConfigManager:
     def __init__(self):
         self._config = None
+        self._config_loaded = False  # Track if config has been loaded
 
     def ensure_config(self):
         """Ensures the config directory and file exist."""
@@ -29,7 +33,11 @@ class ConfigManager:
             self.save(DEFAULT_CONFIG)
 
     def load(self) -> dict:
-        """Loads the configuration from file."""
+        """Loads the configuration from file with caching."""
+        # Return cached config if already loaded
+        if self._config_loaded and self._config is not None:
+            return self._config
+        
         if not CONFIG_FILE.exists():
             self.ensure_config()
         
@@ -46,6 +54,7 @@ class ConfigManager:
         except Exception:
             self._config = DEFAULT_CONFIG
         
+        self._config_loaded = True
         return self._config
 
     def save(self, config_data: dict):

@@ -28,9 +28,13 @@ THEME = Theme(
 class UI:
     def __init__(self):
         self.console = Console(theme=THEME)
+        self._splash_cache = None  # Cache for pre-computed splash screen
 
-    def splash(self):
-        """Render the TERNEXAR premium banner."""
+    def _build_splash(self):
+        """Pre-compute and cache the gradient ASCII banner."""
+        if self._splash_cache is not None:
+            return self._splash_cache
+        
         banner_text = """
 ████████╗███████╗██████╗ ███╗   ██╗███████╗██╗  ██╗ █████╗ ██████╗
 ╚══██╔══╝██╔════╝██╔══██╗████╗  ██║██╔════╝╚██╗██╔╝██╔══██╗██╔══██╗
@@ -40,6 +44,7 @@ class UI:
    ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
 """
         lines = banner_text.strip("\n").split("\n")
+        cached_lines = []
 
         for line in lines:
             text = Text(line)
@@ -57,6 +62,16 @@ class UI:
                 color = f"#{r:02x}{g:02x}{b:02x}"
                 text.stylize(color, i, i + 1)
 
+            cached_lines.append(text)
+        
+        self._splash_cache = cached_lines
+        return cached_lines
+
+    def splash(self):
+        """Render the TERNEXAR premium banner."""
+        cached_lines = self._build_splash()
+        
+        for text in cached_lines:
             self.console.print(text)
 
         self.console.print(
