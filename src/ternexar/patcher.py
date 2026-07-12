@@ -88,14 +88,18 @@ class Patcher:
         """Generate a unified diff between current file and new content."""
         if not file_path.exists():
             # For new files like requirements.txt
+            old_content = ""
             old_lines = []
             file_label = f"a/{file_path.name}"
         else:
-            with open(file_path, "r", encoding="utf-8") as f:
-                old_lines = f.readlines()
+            old_content = file_path.read_text(encoding="utf-8")
+            old_lines = old_content.splitlines(keepends=True)
             file_label = f"a/{file_path.name}"
 
-        new_lines = [line + "\n" if not line.endswith("\n") else line for line in new_content.splitlines()]
+        if old_content == new_content:
+            return None
+
+        new_lines = new_content.splitlines(keepends=True)
         
         diff = difflib.unified_diff(
             old_lines,
@@ -127,7 +131,7 @@ class Patcher:
 
         diff = self.generate_diff(file_path, new_content)
         if not diff:
-            return PatchResult(success=True, diff=None, notes="No changes detected.")
+            return PatchResult(success=True, diff=None)
 
         # Re-check diff line count
         diff_lines = diff.splitlines()
