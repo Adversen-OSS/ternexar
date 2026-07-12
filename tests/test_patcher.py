@@ -62,3 +62,19 @@ def test_patcher_apply_patch_with_backup(tmp_path):
     assert result.backup_path.exists()
     assert result.backup_path.read_text() == "old content"
     assert ".ternexar/backups" in str(result.backup_path)
+
+def test_patcher_apply_patch_no_change_creates_no_backup(tmp_path):
+    patcher = Patcher(project_root=tmp_path)
+    file = tmp_path / "app.py"
+    original_content = "same content"
+    file.write_text(original_content)
+
+    result = patcher.apply_patch(file, original_content)
+
+    assert result.success is True
+    assert result.diff is None
+    assert result.backup_path is None
+    assert result.error is None
+    assert file.read_text() == original_content
+    assert not patcher.backup_dir.exists()
+
