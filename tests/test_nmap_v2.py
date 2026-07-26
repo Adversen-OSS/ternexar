@@ -10,6 +10,10 @@ from ternexar.install_preflight import handle_install_preflight, PreflightVerdic
 from ternexar.installer_execute import installer_executor, InstallStatus
 from ternexar.router import router, Intent
 
+@pytest.fixture
+def apt_platform(monkeypatch):
+    monkeypatch.setattr(profile_registry, "detect_os_key", lambda: "linux-apt")
+
 def test_nmap_profile_registry():
     """Verify nmap is in the profile registry with correct details."""
     profile = profile_registry.get_profile("nmap")
@@ -33,7 +37,7 @@ def test_nmap_version_check_registry():
     assert profile.version_command == ["nmap", "--version"]
 
 @patch("ternexar.ui.ui.render_install_preview")
-def test_nmap_install_preview(mock_render):
+def test_nmap_install_preview(mock_render, apt_platform):
     """Verify install-preview shows correct data for nmap."""
     handle_install_preview("nmap")
     args, _ = mock_render.call_args
@@ -42,6 +46,20 @@ def test_nmap_install_preview(mock_render):
     assert data["status"] == "AVAILABLE"
     assert any("sudo apt install nmap" == step["command"] for step in data["steps"])
     assert any(step["risk_level"].value == "HIGH" for step in data["steps"])
+
+@patch("ternexar.ui.ui.render_install_preview")
+def test_nmap_install_preview_generic_linux_unsupported(mock_render, monkeypatch):
+    """Verify generic Linux does not fall back to the APT profile."""
+    monkeypatch.setattr(profile_registry, "detect_os_key", lambda: "linux-generic")
+
+    handle_install_preview("nmap")
+    args, _ = mock_render.call_args
+    data = args[0]
+    assert data["detected_os"] == "linux-generic"
+    assert data["status"] == "NEEDS_VERIFICATION"
+    assert data["steps"] == []
+    assert data["verification_command"] is None
+    assert not any("apt" in step["command"] for step in data["steps"])
 
 @patch("shutil.which")
 @patch("subprocess.run")
@@ -58,7 +76,7 @@ def test_nmap_version_check_installed(mock_render, mock_run, mock_which):
 
 @patch("shutil.which")
 @patch("ternexar.ui.ui.render_install_preflight_report")
-def test_nmap_install_preflight(mock_render, mock_which):
+def test_nmap_install_preflight(mock_render, mock_which, apt_platform):
     """Verify preflight report for nmap."""
     # Simulate not installed
     mock_which.return_value = None
@@ -87,7 +105,7 @@ def test_nmap_install_already_installed_skip(mock_render, mock_run, mock_which):
 @patch("shutil.which")
 @patch("typer.confirm")
 @patch("ternexar.ui.ui.info")
-def test_nmap_install_cancel_first_step(mock_info, mock_confirm, mock_which):
+def test_nmap_install_cancel_first_step(mock_info, mock_confirm, mock_which, apt_platform):
     """Verify install cancels at first [y/N] prompt."""
     mock_which.return_value = None
     mock_confirm.return_value = False
@@ -99,7 +117,7 @@ def test_nmap_install_cancel_first_step(mock_info, mock_confirm, mock_which):
 @patch("typer.confirm")
 @patch("typer.prompt")
 @patch("ternexar.ui.ui.error")
-def test_nmap_install_cancel_second_step(mock_error, mock_prompt, mock_confirm, mock_which):
+def test_nmap_install_cancel_second_step(mock_error, mock_prompt, mock_confirm, mock_which, apt_platform):
     """Verify install cancels at strong confirmation prompt."""
     mock_which.return_value = None
     mock_confirm.return_value = True
@@ -113,7 +131,7 @@ def test_nmap_install_cancel_second_step(mock_error, mock_prompt, mock_confirm, 
 @patch("typer.prompt")
 @patch("subprocess.run")
 @patch("ternexar.ui.ui.render_install_result")
-def test_nmap_install_success(mock_render, mock_run, mock_prompt, mock_confirm, mock_which):
+def test_nmap_install_success(mock_render, mock_run, mock_prompt, mock_confirm, mock_which, apt_platform):
     """Verify full successful install flow for nmap."""
     # 1. Not installed initially
     # 2. apt update success
