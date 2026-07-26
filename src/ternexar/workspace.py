@@ -84,10 +84,11 @@ class WorkspaceManager:
         return self._build_tree_recursive(root_path, 0, max_depth)
 
     def _build_tree_recursive(self, current_path: Path, depth: int, max_depth: int) -> Dict:
+        children: List[Dict] = []
         node = {
             "name": current_path.name or str(current_path),
             "type": "directory",
-            "children": []
+            "children": children
         }
 
         if depth >= max_depth:
@@ -100,9 +101,9 @@ class WorkspaceManager:
                         continue
 
                     if entry.is_dir():
-                        node["children"].append(self._build_tree_recursive(Path(entry.path), depth + 1, max_depth))
+                        children.append(self._build_tree_recursive(Path(entry.path), depth + 1, max_depth))
                     elif entry.is_file():
-                        node["children"].append({
+                        children.append({
                             "name": entry.name,
                             "type": "file"
                         })
