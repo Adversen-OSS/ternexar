@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Set, TypedDict
 from ternexar.workspace_config import workspace_config
 
 SAFE_ROOTS = [
@@ -31,6 +31,11 @@ SKIP_FOLDERS = {
 MAX_DEPTH = 4
 MAX_RESULTS = 20
 
+class ProjectMatch(TypedDict):
+    name: str
+    path: str
+    match_type: str
+
 class ProjectLocator:
     def __init__(self):
         self._default_roots = []
@@ -60,10 +65,10 @@ class ProjectLocator:
                 roots.append(path)
         return roots
 
-    def locate(self, query: str) -> List[Dict]:
+    def locate(self, query: str) -> List[ProjectMatch]:
         """Search for directories matching the query within safe roots."""
-        results = []
-        seen_paths = set()
+        results: List[ProjectMatch] = []
+        seen_paths: Set[str] = set()
         query = query.lower()
 
         roots = self._get_all_roots()
@@ -74,7 +79,14 @@ class ProjectLocator:
 
         return results[:MAX_RESULTS]
 
-    def _search_recursive(self, current_dir: Path, query: str, depth: int, results: List[Dict], seen_paths: set):
+    def _search_recursive(
+        self,
+        current_dir: Path,
+        query: str,
+        depth: int,
+        results: List[ProjectMatch],
+        seen_paths: Set[str],
+    ):
         if depth > MAX_DEPTH or len(results) >= MAX_RESULTS:
             return
 
