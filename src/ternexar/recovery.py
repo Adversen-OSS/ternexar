@@ -76,7 +76,7 @@ class RecoveryEngine:
                 return self._refused_report(f"Sensitive folder blocked: {file_path}", "PATH_BLOCKED")
 
             # 3. System paths
-            if any(str(path).startswith(bp) for bp in self.blocked_paths):
+            if self._is_blocked_system_path(path):
                 return self._refused_report(f"System path blocked in v2.1: {file_path}", "PATH_BLOCKED")
 
             # 4. Filename checks
@@ -102,6 +102,13 @@ class RecoveryEngine:
             return self._refused_report(f"Non-text file blocked: {file_path}", "TYPE_BLOCKED")
         except Exception as e:
             return self._refused_report(f"Error reading file: {str(e)}", "READ_ERROR")
+
+    def _is_blocked_system_path(self, path: Path) -> bool:
+        """Return whether a resolved path is a blocked root or its descendant."""
+        return any(
+            path == blocked_root or blocked_root in path.parents
+            for blocked_root in (Path(blocked_path) for blocked_path in self.blocked_paths)
+        )
 
     def _is_destructive(self, text: str) -> bool:
         """Detect destructive patterns."""

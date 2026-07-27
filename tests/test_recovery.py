@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from ternexar.recovery_profiles import RecoveryDomain, classify_error
-from ternexar.recovery import recovery_engine, RecoveryReport
+from ternexar.recovery import RecoveryEngine, recovery_engine, RecoveryReport
 
 def test_operator_routing_recovery(mocker):
     from ternexar.router import router, Intent
@@ -105,6 +105,41 @@ def test_recover_file_blocks_system_path():
     report = recovery_engine.recover_file("/etc/apt/sources.list")
     assert report.status == "REFUSED"
     assert "System path blocked" in report.profile.explanation
+
+def test_recover_file_allows_sibling_of_blocked_system_path(tmp_path):
+    blocked_root = tmp_path / "var"
+    sibling_root = tmp_path / "variable"
+    blocked_root.mkdir()
+    sibling_root.mkdir()
+    error_file = sibling_root / "error.log"
+    error_file.write_text("Some random weird error that doesn't match anything")
+    engine = RecoveryEngine()
+    engine.blocked_paths = {str(blocked_root.resolve())}
+
+    report = engine.recover_file(str(error_file))
+
+    assert report.safety_decision != "PATH_BLOCKED"
+
+def test_recover_file_blocks_descendant_of_blocked_system_path(tmp_path):
+    blocked_root = tmp_path / "var"
+    blocked_root.mkdir()
+    error_file = blocked_root / "error.log"
+    error_file.write_text("Some random weird error that doesn't match anything")
+    engine = RecoveryEngine()
+    engine.blocked_paths = {str(blocked_root.resolve())}
+
+    report = engine.recover_file(str(error_file))
+
+    assert report.status == "REFUSED"
+    assert report.safety_decision == "PATH_BLOCKED"
+
+def test_blocked_system_path_helper_matches_root(tmp_path):
+    blocked_root = tmp_path / "var"
+    blocked_root.mkdir()
+    engine = RecoveryEngine()
+    engine.blocked_paths = {str(blocked_root.resolve())}
+
+    assert engine._is_blocked_system_path(blocked_root.resolve())
 
 def test_redaction():
     error = "Error with token abcdef1234567890abcdef1234567890abcdef1234567890"
