@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-from ternexar.gate import gate_engine, PolicyDecision
+from ternexar.gate import gate_engine, GateStatus, PolicyDecision
 from ternexar.risk import RiskLevel
 from ternexar.ui import ui
 
@@ -14,7 +14,7 @@ class ConfirmationMode(Enum):
 class ConfirmationResult:
     command: str
     risk_level: RiskLevel
-    gate_decision: str
+    gate_decision: GateStatus
     policy: PolicyDecision
     mode: str
     future_behavior: str

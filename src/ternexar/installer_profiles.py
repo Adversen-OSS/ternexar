@@ -156,34 +156,38 @@ def handle_install_preview(tool: str):
     """Handler for installer profile preview logic."""
     profile = profile_registry.get_profile(tool)
     os_key = profile_registry.detect_os_key()
-    
-    data = {
-        "requested_tool": tool,
-        "profile_name": profile.name if profile else "Unknown",
-        "detected_os": os_key,
-        "status": profile.status.value if profile else ProfileStatus.UNKNOWN_TOOL.value,
-        "global_warnings": profile.global_warnings if profile else [],
-        "steps": [],
-        "verification_command": None
-    }
+    global_warnings: List[str] = list(profile.global_warnings) if profile else []
+    steps: List[Dict[str, object]] = []
+    verification_command: Optional[str] = None
+    status = profile.status.value if profile else ProfileStatus.UNKNOWN_TOOL.value
 
     if profile and profile.status == ProfileStatus.AVAILABLE:
         platform_profile = profile.platforms.get(os_key)
         if platform_profile:
-            data["verification_command"] = platform_profile.verification
-            data["global_warnings"].extend(platform_profile.warnings)
+            verification_command = platform_profile.verification
+            global_warnings.extend(platform_profile.warnings)
             
             for cmd in platform_profile.commands:
                 gate_result = gate_engine.evaluate(cmd)
                 confirm_result = confirm_engine.evaluate(cmd)
                 
-                data["steps"].append({
+                steps.append({
                     "command": cmd,
                     "risk_level": gate_result.risk_level,
                     "gate_decision": gate_result.gate_decision.value,
                     "confirmation_mode": confirm_result.mode
                 })
         else:
-            data["status"] = ProfileStatus.NEEDS_VERIFICATION.value
+            status = ProfileStatus.NEEDS_VERIFICATION.value
+
+    data = {
+        "requested_tool": tool,
+        "profile_name": profile.name if profile else "Unknown",
+        "detected_os": os_key,
+        "status": status,
+        "global_warnings": global_warnings,
+        "steps": steps,
+        "verification_command": verification_command,
+    }
 
     ui.render_install_preview(data)

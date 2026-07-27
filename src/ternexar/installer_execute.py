@@ -89,6 +89,20 @@ class InstallerExecutor:
             )
             return
 
+        if profile is None:
+            ui.error("Installation refused: verified installer profile is unavailable.")
+            audit_manager.log_event(
+                command=f"install {tool_name}",
+                risk_level="N/A",
+                gate_decision="BLOCK",
+                policy="DENY",
+                confirmation_mode="N/A",
+                action_type="INSTALL_REFUSED",
+                result="REFUSED",
+                notes="Verified installer profile was unavailable before execution."
+            )
+            return
+
         # 4. Mandatory Review UI
         ui.render_install_execution_header(normalized_name)
         ui.render_install_preflight_report(preflight_data)
