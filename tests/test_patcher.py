@@ -413,8 +413,8 @@ def test_apply_patch_cleans_temporary_file_when_rename_or_directory_sync_fails(
     target.write_text("original")
     patcher = Patcher(project_root=tmp_path)
     monkeypatch.setattr(
-        patcher_module.os,
-        "rename",
+        patcher,
+        "_renameat2",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failure")),
     )
 
@@ -437,8 +437,9 @@ def test_apply_patch_cleans_temporary_file_when_rename_or_directory_sync_fails(
     monkeypatch.setattr(patcher_module.os, "fsync", fail_directory_sync)
     sync_result = patcher.apply_patch(target, "newer")
 
-    assert sync_result.success is False
+    assert sync_result.success is True
     assert target.read_text() == "newer"
+    assert "committed" in (sync_result.error or "").lower()
     assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
 
 
@@ -811,3 +812,303 @@ def test_verify_and_generate_diff_operational_errors_are_controlled(
         ),
     )
     assert patcher.generate_diff(target, "new") is None
+
+
+def test_atomic_exchange_rolls_back_when_target_changes_after_verification(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("verified original")
+    raced_target = tmp_path / "raced.py"
+    raced_target.write_text("raced replacement")
+    patcher = Patcher(project_root=tmp_path)
+    original_renameat2 = patcher._renameat2
+    swapped = False
+
+    def swap_immediately_before_commit(*args):
+        nonlocal swapped
+        if args[-1] == patcher_module.RENAME_EXCHANGE and not swapped:
+            swapped = True
+            os.replace(raced_target, target)
+        return original_renameat2(*args)
+
+    monkeypatch.setattr(patcher, "_renameat2", swap_immediately_before_commit)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    assert target.read_text() == "raced replacement"
+    assert "new content" not in target.read_text()
+
+
+def test_directory_identity_swap_is_refused_for_root_and_parent(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    replacement_root = tmp_path / "replacement-root"
+    replacement_root.mkdir()
+    old_root = tmp_path / "old-root"
+    patcher = Patcher(project_root=project)
+    original_open = patcher_module.os.open
+
+    def swap_root(path, flags, *args, **kwargs):
+        if path == project:
+            os.rename(project, old_root)
+            os.rename(replacement_root, project)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", swap_root)
+    with pytest.raises(
+        patcher_module.PatcherSecurityError, match="changed while opening"
+    ):
+        patcher._open_project_root()
+    monkeypatch.undo()
+
+    nested = project / "nested"
+    nested.mkdir()
+    replacement_parent = project / "replacement-parent"
+    replacement_parent.mkdir()
+    old_parent = project / "old-parent"
+    original_open = patcher_module.os.open
+
+    def swap_parent(path, flags, *args, **kwargs):
+        if path == "nested":
+            os.rename(nested, old_parent)
+            os.rename(replacement_parent, nested)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", swap_parent)
+    with pytest.raises(
+        patcher_module.PatcherSecurityError, match="changed while opening"
+    ):
+        patcher._open_parent_directory(("nested", "app.py"))
+
+
+def test_backup_directory_identity_swap_is_refused(tmp_path, monkeypatch):
+    patcher = Patcher(project_root=tmp_path)
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    replacement = tmp_path / "replacement-backups"
+    replacement.mkdir()
+    old_backup = tmp_path / "old-backups"
+    root_fd = patcher._open_project_root()
+    original_open = patcher_module.os.open
+
+    def swap_backup(path, flags, *args, **kwargs):
+        if path == "backups":
+            os.rename(backup_dir, old_backup)
+            os.rename(replacement, backup_dir)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", swap_backup)
+    try:
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="changed while opening"
+        ):
+            patcher._open_or_create_directory(root_fd, "backups")
+    finally:
+        os.close(root_fd)
+
+
+def test_unsupported_atomic_commit_fails_without_mutating_target(tmp_path, monkeypatch):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(
+        patcher,
+        "_renameat2",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSYS, "missing")),
+    )
+
+    result = patcher.apply_patch(target, "new")
+
+    assert result.success is False
+    assert "unsupported" in (result.error or "").lower()
+    assert target.read_text() == "original"
+
+
+def test_secure_platform_rejects_non_linux_atomic_commit_support(monkeypatch):
+    patcher = Patcher(project_root=Path.cwd())
+    monkeypatch.setattr(patcher_module.sys, "platform", "darwin")
+
+    assert "atomic conditional rename" in (patcher._secure_platform_error() or "")
+
+
+def test_project_root_open_os_error_is_reported_as_a_security_failure(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(
+        patcher,
+        "_open_verified_directory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("root open failure")),
+    )
+
+    with pytest.raises(
+        patcher_module.PatcherSecurityError, match="project root safely"
+    ):
+        patcher._open_project_root()
+
+
+def test_verified_directory_rejects_type_change_and_fstat_failure(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    original_fstat = patcher_module.os.fstat
+    regular = tmp_path / "regular.py"
+    regular.write_text("content")
+    regular_stat = os.stat(regular)
+
+    monkeypatch.setattr(patcher_module.os, "fstat", lambda _: regular_stat)
+    with pytest.raises(patcher_module.PatcherSecurityError, match="changed type"):
+        patcher._open_verified_directory(tmp_path, error_context="Test directory")
+
+    monkeypatch.setattr(
+        patcher_module.os,
+        "fstat",
+        lambda _: (_ for _ in ()).throw(OSError("fstat failure")),
+    )
+    with pytest.raises(
+        patcher_module.PatcherSecurityError, match="verify test directory"
+    ):
+        patcher._open_verified_directory(tmp_path, error_context="Test directory")
+    monkeypatch.setattr(patcher_module.os, "fstat", original_fstat)
+
+
+def test_backup_directory_fchmod_failure_closes_descriptor(tmp_path, monkeypatch):
+    patcher = Patcher(project_root=tmp_path)
+    root_fd = patcher._open_project_root()
+    closed = []
+    original_close = patcher_module.os.close
+    monkeypatch.setattr(
+        patcher_module.os,
+        "fchmod",
+        lambda *_: (_ for _ in ()).throw(OSError("chmod failure")),
+    )
+    monkeypatch.setattr(
+        patcher_module.os,
+        "close",
+        lambda descriptor: (closed.append(descriptor), original_close(descriptor))[1],
+    )
+    try:
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="backup directory"
+        ):
+            patcher._open_or_create_directory(root_fd, "backups")
+    finally:
+        original_close(root_fd)
+
+    assert closed
+
+
+def test_backup_and_temporary_cleanup_errors_are_suppressed_after_primary_failure(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    original_unlink = patcher_module.os.unlink
+
+    monkeypatch.setattr(
+        patcher,
+        "_write_all",
+        lambda *_: (_ for _ in ()).throw(OSError("write failure")),
+    )
+    monkeypatch.setattr(
+        patcher_module.os,
+        "unlink",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("cleanup failure")),
+    )
+    with pytest.raises(OSError, match="write failure"):
+        patcher._write_backup("app.py", b"original")
+
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    try:
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="temporary patch"
+        ):
+            patcher._write_temporary_file(parent_fd, b"new", 0o600)
+    finally:
+        monkeypatch.setattr(patcher_module.os, "unlink", original_unlink)
+        os.close(parent_fd)
+
+
+def test_renameat2_capability_and_syscall_errors_are_controlled(monkeypatch):
+    original_uname = patcher_module.os.uname
+    monkeypatch.setattr(
+        patcher_module.os,
+        "uname",
+        lambda: type("Info", (), {"machine": "unknown"})(),
+    )
+    with pytest.raises(patcher_module.PatcherSecurityError, match="unsupported"):
+        Patcher._renameat2(1, "one", 1, "two", patcher_module.RENAME_NOREPLACE)
+
+    class FailingLibc:
+        def syscall(self, *args):
+            return -1
+
+    monkeypatch.setattr(patcher_module.os, "uname", original_uname)
+    monkeypatch.setattr(
+        patcher_module.ctypes, "CDLL", lambda *args, **kwargs: FailingLibc()
+    )
+    monkeypatch.setattr(patcher_module.ctypes, "get_errno", lambda: errno.ENOSYS)
+    with pytest.raises(OSError) as error:
+        Patcher._renameat2(1, "one", 1, "two", patcher_module.RENAME_NOREPLACE)
+    assert error.value.errno == errno.ENOSYS
+
+
+def test_atomic_new_target_appearance_and_exchanged_read_failure_are_refused(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    temporary = tmp_path / ".ternexar-patch-test.tmp"
+    temporary.write_text("new")
+    try:
+        new_state = patcher._read_target(parent_fd, target_name)
+        monkeypatch.setattr(
+            patcher,
+            "_renameat2",
+            lambda *args: (_ for _ in ()).throw(FileExistsError("appeared")),
+        )
+        with pytest.raises(patcher_module.PatcherSecurityError, match="appeared"):
+            patcher._atomic_commit(parent_fd, temporary.name, target_name, new_state)
+
+        target = tmp_path / "app.py"
+        target.write_text("old")
+        state = patcher._read_target(parent_fd, target_name)
+        monkeypatch.setattr(patcher, "_renameat2", lambda *args: None)
+        monkeypatch.setattr(
+            patcher,
+            "_read_target",
+            lambda *args: (_ for _ in ()).throw(
+                patcher_module.PatcherSecurityError("exchanged read failure")
+            ),
+        )
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="could not verify"
+        ):
+            patcher._atomic_commit(parent_fd, temporary.name, target_name, state)
+    finally:
+        os.close(parent_fd)
+
+
+def test_post_commit_old_entry_cleanup_failure_is_a_success_with_warning(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("old")
+    patcher = Patcher(project_root=tmp_path)
+    original_unlink = patcher_module.os.unlink
+    monkeypatch.setattr(patcher, "_secure_platform_error", lambda: None)
+
+    def fail_only_exchanged_old(name, *args, **kwargs):
+        if str(name).startswith(".ternexar-patch-"):
+            raise OSError("old entry cleanup failure")
+        return original_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "unlink", fail_only_exchanged_old)
+    result = patcher.apply_patch(target, "new")
+
+    assert result.success is True
+    assert target.read_text() == "new"
+    assert "committed" in (result.error or "").lower()

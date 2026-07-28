@@ -1,8 +1,10 @@
+import ctypes
 import difflib
 import errno
 import os
 import secrets
 import stat
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,18 @@ BLOCKED_FOLDERS = {
     "build",
 }
 NEW_FILE_MODE = 0o600
+RENAME_NOREPLACE = 1
+RENAME_EXCHANGE = 2
+_RENAMEAT2_SYSCALLS = {
+    "x86_64": 316,
+    "aarch64": 276,
+    "armv7l": 382,
+    "i386": 353,
+    "ppc64": 357,
+    "ppc64le": 357,
+    "s390x": 347,
+    "riscv64": 276,
+}
 
 
 class PatcherSecurityError(RuntimeError):
@@ -58,13 +72,15 @@ class Patcher:
         required_constants = ("O_NOFOLLOW", "O_DIRECTORY")
         if any(not hasattr(os, name) for name in required_constants):
             return "Secure patching is unavailable: this platform lacks no-follow directory support."
-        if os.open not in os.supports_dir_fd or os.rename not in os.supports_dir_fd:
+        if os.open not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
             return "Secure patching is unavailable: this platform lacks descriptor-relative operations."
         if (
             os.stat not in os.supports_dir_fd
             or os.stat not in os.supports_follow_symlinks
         ):
             return "Secure patching is unavailable: this platform cannot inspect targets without following links."
+        if sys.platform != "linux" or os.uname().machine not in _RENAMEAT2_SYSCALLS:
+            return "Secure patching is unavailable: atomic conditional rename is unsupported on this platform."
         return None
 
     def _open_flags(self, base_flags: int) -> int:
@@ -103,13 +119,9 @@ class Patcher:
 
     def _open_project_root(self) -> int:
         try:
-            root_stat = os.stat(self.project_root, follow_symlinks=False)
-            if stat.S_ISLNK(root_stat.st_mode):
-                raise PatcherSecurityError("Project root symlink is refused.")
-            if not stat.S_ISDIR(root_stat.st_mode):
-                raise PatcherSecurityError("Project root is not a directory.")
-            return os.open(
-                self.project_root, self._open_flags(os.O_RDONLY | os.O_DIRECTORY)
+            return self._open_verified_directory(
+                self.project_root,
+                error_context="Project root",
             )
         except PatcherSecurityError:
             raise
@@ -122,15 +134,10 @@ class Patcher:
         directory_fd = self._open_project_root()
         try:
             for part in parts[:-1]:
-                entry_stat = os.stat(part, dir_fd=directory_fd, follow_symlinks=False)
-                if stat.S_ISLNK(entry_stat.st_mode):
-                    raise PatcherSecurityError("Symlinked parent directory is refused.")
-                if not stat.S_ISDIR(entry_stat.st_mode):
-                    raise PatcherSecurityError("Target parent is not a directory.")
-                next_fd = os.open(
+                next_fd = self._open_verified_directory(
                     part,
-                    self._open_flags(os.O_RDONLY | os.O_DIRECTORY),
                     dir_fd=directory_fd,
+                    error_context="Target parent directory",
                 )
                 os.close(directory_fd)
                 directory_fd = next_fd
@@ -153,6 +160,64 @@ class Patcher:
             file_stat.st_mtime_ns,
             file_stat.st_ctime_ns,
         )
+
+    @staticmethod
+    def _directory_identity(file_stat: os.stat_result) -> Tuple[int, int]:
+        return file_stat.st_dev, file_stat.st_ino
+
+    @staticmethod
+    def _same_inode(
+        first_identity: Optional[Tuple[int, int, int, int, int]],
+        second_identity: Optional[Tuple[int, int, int, int, int]],
+    ) -> bool:
+        return (
+            first_identity is not None
+            and second_identity is not None
+            and first_identity[:2] == second_identity[:2]
+        )
+
+    def _open_verified_directory(
+        self,
+        path: str | Path,
+        *,
+        dir_fd: Optional[int] = None,
+        error_context: str,
+    ) -> int:
+        try:
+            before = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode):
+                raise PatcherSecurityError(f"{error_context} symlink is refused.")
+            if not stat.S_ISDIR(before.st_mode):
+                raise PatcherSecurityError(f"{error_context} is not a directory.")
+            descriptor = os.open(
+                path,
+                self._open_flags(os.O_RDONLY | os.O_DIRECTORY),
+                dir_fd=dir_fd,
+            )
+        except PatcherSecurityError:
+            raise
+        except OSError as error:
+            raise PatcherSecurityError(
+                f"Unable to open {error_context.lower()} safely: {error}"
+            ) from error
+
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISDIR(opened.st_mode):
+                raise PatcherSecurityError(
+                    f"{error_context} changed type while opening."
+                )
+            if self._directory_identity(opened) != self._directory_identity(before):
+                raise PatcherSecurityError(f"{error_context} changed while opening.")
+            return descriptor
+        except PatcherSecurityError:
+            os.close(descriptor)
+            raise
+        except OSError as error:
+            os.close(descriptor)
+            raise PatcherSecurityError(
+                f"Unable to verify {error_context.lower()} safely: {error}"
+            ) from error
 
     def _read_target(self, parent_fd: int, target_name: str) -> _TargetState:
         try:
@@ -242,15 +307,10 @@ class Patcher:
 
         descriptor: Optional[int] = None
         try:
-            entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if stat.S_ISLNK(entry_stat.st_mode):
-                raise PatcherSecurityError("Backup directory symlink is refused.")
-            if not stat.S_ISDIR(entry_stat.st_mode):
-                raise PatcherSecurityError("Backup path is not a directory.")
-            descriptor = os.open(
+            descriptor = self._open_verified_directory(
                 name,
-                self._open_flags(os.O_RDONLY | os.O_DIRECTORY),
                 dir_fd=parent_fd,
+                error_context="Backup directory",
             )
             os.fchmod(descriptor, 0o700)
             opened_descriptor = descriptor
@@ -360,6 +420,131 @@ class Patcher:
                 except OSError:
                     pass
 
+    @staticmethod
+    def _renameat2(
+        source_directory_fd: int,
+        source_name: str,
+        destination_directory_fd: int,
+        destination_name: str,
+        flags: int,
+    ) -> None:
+        """Invoke Linux renameat2 with descriptor-relative names only."""
+        try:
+            syscall_number = _RENAMEAT2_SYSCALLS[os.uname().machine]
+        except (AttributeError, KeyError) as error:
+            raise PatcherSecurityError(
+                "Atomic conditional rename is unsupported on this platform."
+            ) from error
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = libc.syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(source_directory_fd),
+            ctypes.c_char_p(source_name.encode("utf-8")),
+            ctypes.c_int(destination_directory_fd),
+            ctypes.c_char_p(destination_name.encode("utf-8")),
+            ctypes.c_uint(flags),
+        )
+        if result == -1:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+
+    def _rollback_exchange(
+        self, parent_fd: int, temporary_name: str, target_name: str
+    ) -> None:
+        try:
+            self._renameat2(
+                parent_fd,
+                temporary_name,
+                parent_fd,
+                target_name,
+                RENAME_EXCHANGE,
+            )
+        except (OSError, PatcherSecurityError) as error:
+            raise PatcherSecurityError(
+                "Atomic commit verification failed and rollback failed; "
+                f"the target may contain the replacement: {error}"
+            ) from error
+
+    def _atomic_commit(
+        self,
+        parent_fd: int,
+        temporary_name: str,
+        target_name: str,
+        target_state: _TargetState,
+    ) -> Optional[str]:
+        """Commit with renameat2, returning the exchanged old entry when present."""
+        try:
+            if not target_state.exists:
+                self._renameat2(
+                    parent_fd,
+                    temporary_name,
+                    parent_fd,
+                    target_name,
+                    RENAME_NOREPLACE,
+                )
+                return None
+
+            self._renameat2(
+                parent_fd,
+                temporary_name,
+                parent_fd,
+                target_name,
+                RENAME_EXCHANGE,
+            )
+        except FileExistsError as error:
+            raise PatcherSecurityError(
+                "A target appeared before atomic replacement."
+            ) from error
+        except OSError as error:
+            if error.errno in {errno.ENOSYS, errno.EINVAL}:
+                raise PatcherSecurityError(
+                    "Atomic conditional rename is unsupported by this Linux kernel."
+                ) from error
+            raise PatcherSecurityError(f"Atomic replacement failed: {error}") from error
+
+        try:
+            exchanged_state = self._read_target(parent_fd, temporary_name)
+        except PatcherSecurityError as error:
+            self._rollback_exchange(parent_fd, temporary_name, target_name)
+            raise PatcherSecurityError(
+                f"Atomic replacement could not verify the exchanged target: {error}"
+            ) from error
+
+        if not exchanged_state.exists or not self._same_inode(
+            exchanged_state.identity, target_state.identity
+        ):
+            self._rollback_exchange(parent_fd, temporary_name, target_name)
+            raise PatcherSecurityError(
+                "Atomic replacement refused because the target changed before commit."
+            )
+        return temporary_name
+
+    @staticmethod
+    def _post_commit_result(
+        file_path: Path,
+        backup_path: Optional[Path],
+        diff: str,
+        durability_error: Optional[OSError],
+    ) -> PatchResult:
+        if durability_error is None:
+            return PatchResult(
+                success=True,
+                file_path=file_path,
+                backup_path=backup_path,
+                diff=diff,
+            )
+        return PatchResult(
+            success=True,
+            file_path=file_path,
+            backup_path=backup_path,
+            diff=diff,
+            error=(
+                "Replacement committed, but directory durability sync failed: "
+                f"{durability_error}"
+            ),
+        )
+
     def _verify_target_unchanged(
         self, parent_fd: int, target_name: str, target_state: _TargetState
     ) -> None:
@@ -450,19 +635,28 @@ class Patcher:
                 parent_fd, new_content.encode("utf-8"), target_state.mode
             )
             self._verify_target_unchanged(parent_fd, target_name, target_state)
-            os.rename(
+            exchanged_old_name = self._atomic_commit(
+                parent_fd,
                 temporary_name,
                 target_name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
+                target_state,
             )
             temporary_name = None
-            os.fsync(parent_fd)
-            return PatchResult(
-                success=True,
-                file_path=file_path,
-                backup_path=backup_path,
-                diff=diff,
+            post_commit_error: Optional[OSError] = None
+            if exchanged_old_name is not None:
+                try:
+                    os.unlink(exchanged_old_name, dir_fd=parent_fd)
+                except OSError as error:
+                    post_commit_error = error
+            try:
+                os.fsync(parent_fd)
+            except OSError as error:
+                post_commit_error = post_commit_error or error
+            return self._post_commit_result(
+                file_path,
+                backup_path,
+                diff,
+                post_commit_error,
             )
         except (OSError, PatcherSecurityError) as error:
             return PatchResult(
