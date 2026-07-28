@@ -1,6 +1,8 @@
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+import pytest
+import ternexar.audit as audit_module
 from ternexar.audit import AuditManager
 
 
@@ -47,25 +49,35 @@ def test_audit_clear(tmp_path):
 
 def test_audit_redacts_secrets_from_command_and_notes(tmp_path):
     manager = make_manager(tmp_path)
-    command_secret = "super-secret-token"
-    notes_secret = "correct-horse-battery-staple"
+    secrets = [
+        ("deploy --password secret-value", "secret-value"),
+        ("deploy --token secret-value", "secret-value"),
+        ("deploy --api-key secret-value", "secret-value"),
+        ("Authorization: Bearer secret-value", "secret-value"),
+        ("key=secret-value", "secret-value"),
+        ("key:secret-value", "secret-value"),
+        ("use ghp_abcdefghijklmnopqrstuvwxyz1234567890", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"),
+        ("use sk-abcdefghijklmnopqrstuvwxyz1234567890", "sk-abcdefghijklmnopqrstuvwxyz1234567890"),
+        ("use AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+    ]
 
-    manager.log_event(
-        command=f"deploy --token={command_secret}",
-        risk_level="HIGH",
-        gate_decision="HOLD",
-        policy="REQUIRE_CONFIRMATION",
-        confirmation_mode="STANDARD",
-        action_type="EXECUTION_START",
-        result="PENDING",
-        notes=f"password={notes_secret}",
-    )
+    for command, secret in secrets:
+        manager.log_event(
+            command=command,
+            risk_level="HIGH",
+            gate_decision="HOLD",
+            policy="REQUIRE_CONFIRMATION",
+            confirmation_mode="STANDARD",
+            action_type="EXECUTION_START",
+            result="PENDING",
+            notes=f"password={secret}",
+        )
 
-    record = manager.get_records()[0]
-    assert command_secret not in record["command"]
-    assert notes_secret not in record["notes"]
-    assert "[REDACTED_SENSITIVE_DATA]" in record["command"]
-    assert "[REDACTED_SENSITIVE_DATA]" in record["notes"]
+    for record, (_, secret) in zip(manager.get_records(limit=len(secrets)), secrets):
+        assert secret not in record["command"]
+        assert secret not in record["notes"]
+        assert "[REDACTED]" in record["command"]
+        assert "[REDACTED]" in record["notes"]
 
 
 def test_audit_enforces_directory_and_file_permissions(tmp_path):
@@ -95,6 +107,20 @@ def test_audit_skips_malformed_jsonl_and_preserves_valid_records(tmp_path):
     assert manager.get_records() == [valid_first, valid_last]
 
 
+def test_audit_limits_apply_only_to_valid_dictionary_records(tmp_path):
+    manager = make_manager(tmp_path)
+    valid_first = {"command": "first"}
+    valid_last = {"command": "last"}
+    manager.log_file.write_text(
+        f"{json.dumps(valid_first)}\n[\"not a record\"]\nnot-json\n{json.dumps(valid_last)}\n"
+    )
+
+    assert manager.get_records(limit=1) == [valid_last]
+    assert manager.get_records(limit=0) == []
+    with pytest.raises(ValueError):
+        manager.get_records(limit=-1)
+
+
 def test_audit_returns_empty_for_missing_or_unreadable_logs(tmp_path, monkeypatch):
     manager = make_manager(tmp_path)
     assert manager.get_records() == []
@@ -121,7 +147,7 @@ def test_audit_jsonl_serialization_prevents_newline_injection(tmp_path):
     assert manager.get_records()[0]["command"] == injected_command
 
 
-def test_audit_returns_false_on_controlled_write_failure(tmp_path, monkeypatch):
+def test_audit_write_failures_remain_non_fatal_and_preserve_public_api(tmp_path, monkeypatch):
     manager = make_manager(tmp_path)
 
     def fail_open(*args, **kwargs):
@@ -129,23 +155,23 @@ def test_audit_returns_false_on_controlled_write_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.open", fail_open)
 
-    assert manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK") is False
+    assert manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK") is None
 
 
-def test_audit_clear_raises_when_its_audit_record_cannot_be_written(tmp_path, monkeypatch):
+def test_audit_clear_failure_preserves_existing_history(tmp_path, monkeypatch):
     manager = make_manager(tmp_path)
+    manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK")
+    original_log = manager.log_file.read_text()
 
-    def fail_open(*args, **kwargs):
-        raise OSError("write unavailable")
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace unavailable")
 
-    monkeypatch.setattr("builtins.open", fail_open)
+    monkeypatch.setattr(audit_module.os, "replace", fail_replace)
 
-    try:
+    with pytest.raises(RuntimeError):
         manager.clear_logs()
-    except RuntimeError as error:
-        assert "Failed to clear audit log" in str(error)
-    else:
-        raise AssertionError("Expected clear_logs to fail when audit logging fails")
+
+    assert manager.log_file.read_text() == original_log
 
 
 def test_audit_preserves_repeated_and_concurrent_appends(tmp_path):
@@ -159,7 +185,7 @@ def test_audit_preserves_repeated_and_concurrent_appends(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(append, range(40)))
 
-    assert all(results)
+    assert all(result is None for result in results)
     records = manager.get_records(limit=40)
     assert len(records) == 40
     assert {record["command"] for record in records} == {f"command-{index}" for index in range(40)}
