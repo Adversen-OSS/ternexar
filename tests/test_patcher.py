@@ -1,67 +1,83 @@
+import os
+import shutil
+import errno
+import importlib
+import stat
+
 import pytest
 from pathlib import Path
 from ternexar.patcher import Patcher
+
+
+patcher_module = importlib.import_module("ternexar.patcher")
+
 
 def test_patcher_validate_file_safe(tmp_path):
     patcher = Patcher(project_root=tmp_path)
     safe_file = tmp_path / "app.py"
     safe_file.write_text("print('hello')")
-    
+
     valid, error = patcher.validate_file(safe_file)
     assert valid is True
     assert error is None
+
 
 def test_patcher_validate_file_outside_root(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     patcher = Patcher(project_root=root)
-    
+
     outside_file = tmp_path / "outside.py"
     outside_file.write_text("print('outside')")
-    
+
     valid, error = patcher.validate_file(outside_file)
     assert valid is False
     assert "outside the project root" in error
+
 
 def test_patcher_validate_file_blocked_extension(tmp_path):
     patcher = Patcher(project_root=tmp_path)
     blocked_file = tmp_path / "image.png"
     blocked_file.write_bytes(b"\x89PNG\r\n\x1a\n")
-    
+
     valid, error = patcher.validate_file(blocked_file)
     assert valid is False
     assert "Unsupported file extension" in error
+
 
 def test_patcher_validate_file_hidden(tmp_path):
     patcher = Patcher(project_root=tmp_path)
     hidden_file = tmp_path / ".secret"
     hidden_file.write_text("secret")
-    
+
     valid, error = patcher.validate_file(hidden_file)
     assert valid is False
     assert "hidden path" in error
+
 
 def test_patcher_generate_diff(tmp_path):
     patcher = Patcher(project_root=tmp_path)
     file = tmp_path / "req.txt"
     file.write_text("flask\n")
-    
+
     diff = patcher.generate_diff(file, "flask\nrequests\n")
     assert "+requests" in diff
     assert "-flask" not in diff
+
 
 def test_patcher_apply_patch_with_backup(tmp_path):
     patcher = Patcher(project_root=tmp_path)
     file = tmp_path / "app.py"
     file.write_text("old content")
-    
+
     result = patcher.apply_patch(file, "new content")
-    
+
     assert result.success is True
     assert file.read_text() == "new content"
     assert result.backup_path.exists()
     assert result.backup_path.read_text() == "old content"
     assert ".ternexar/backups" in str(result.backup_path)
+
 
 def test_patcher_apply_patch_no_change_creates_no_backup(tmp_path):
     patcher = Patcher(project_root=tmp_path)
@@ -78,3 +94,720 @@ def test_patcher_apply_patch_no_change_creates_no_backup(tmp_path):
     assert file.read_text() == original_content
     assert not patcher.backup_dir.exists()
 
+
+def test_patcher_refuses_direct_target_symlink_and_preserves_outside_file(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside content")
+    target = project / "app.py"
+    target.symlink_to(outside_file)
+
+    result = Patcher(project_root=project).apply_patch(target, "new content")
+
+    assert result.success is False
+    assert "symlink" in (result.error or "").lower()
+    assert target.is_symlink()
+    assert outside_file.read_text() == "outside content"
+
+
+def test_patcher_refuses_symlinked_parent_directory(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "app.py"
+    outside_file.write_text("outside content")
+    linked_parent = project / "linked"
+    linked_parent.symlink_to(outside_dir, target_is_directory=True)
+
+    result = Patcher(project_root=project).apply_patch(
+        linked_parent / "app.py", "new content"
+    )
+
+    assert result.success is False
+    assert "symlink" in (result.error or "").lower()
+    assert outside_file.read_text() == "outside content"
+
+
+def test_patcher_refuses_target_swapped_to_symlink_before_commit(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside content")
+    patcher = Patcher(project_root=project)
+    original_verify = patcher._verify_target_unchanged
+
+    def swap_to_symlink(*args, **kwargs):
+        target.unlink()
+        target.symlink_to(outside_file)
+        return original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(patcher, "_verify_target_unchanged", swap_to_symlink)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    assert target.is_symlink()
+    assert outside_file.read_text() == "outside content"
+    assert not list(project.glob(".ternexar-patch-*.tmp"))
+
+
+def test_patcher_refuses_replaced_target_inode_before_commit(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    replacement = project / "replacement.py"
+    replacement.write_text("replacement")
+    patcher = Patcher(project_root=project)
+    original_verify = patcher._verify_target_unchanged
+
+    def replace_target(*args, **kwargs):
+        os.replace(replacement, target)
+        return original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(patcher, "_verify_target_unchanged", replace_target)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    assert target.read_text() == "replacement"
+    assert not list(project.glob(".ternexar-patch-*.tmp"))
+
+
+def test_patcher_ignores_precreated_predictable_temp_symlink(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("outside content")
+    predictable_temp = target.with_suffix(".py.tmp")
+    predictable_temp.symlink_to(outside_file)
+
+    result = Patcher(project_root=project).apply_patch(target, "new content")
+
+    assert result.success is True
+    assert target.read_text() == "new content"
+    assert predictable_temp.is_symlink()
+    assert outside_file.read_text() == "outside content"
+    assert not list(project.glob(".ternexar-patch-*.tmp"))
+
+
+def test_patcher_preserves_existing_target_permissions(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    target.chmod(0o640)
+
+    result = Patcher(project_root=project).apply_patch(target, "new content")
+
+    assert result.success is True
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_patcher_creates_new_files_with_owner_only_permissions(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "requirements.txt"
+
+    result = Patcher(project_root=project).apply_patch(target, "requests\n")
+
+    assert result.success is True
+    assert target.read_text() == "requests\n"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_patcher_fails_closed_when_secure_primitives_are_unavailable(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(patcher_module.os, "supports_dir_fd", set())
+
+    valid, error = patcher.validate_file(target)
+    result = patcher.apply_patch(target, "new content")
+
+    assert valid is False
+    assert "descriptor-relative" in (error or "")
+    assert result.success is False
+    assert target.read_text() == "original"
+
+
+def test_patcher_refuses_symlinked_or_non_directory_project_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(outside, target_is_directory=True)
+
+    linked_result = Patcher(project_root=linked_root).apply_patch(
+        linked_root / "app.py", "new content"
+    )
+    file_result = Patcher(project_root=tmp_path / "not-a-directory").apply_patch(
+        tmp_path / "not-a-directory" / "app.py", "new content"
+    )
+
+    assert linked_result.success is False
+    assert "root symlink" in (linked_result.error or "").lower()
+    assert file_result.success is False
+    assert "project root" in (file_result.error or "").lower()
+
+
+def test_patcher_refuses_invalid_sensitive_and_blocked_targets(tmp_path):
+    patcher = Patcher(project_root=tmp_path)
+    blocked_dir = tmp_path / "build"
+    blocked_dir.mkdir()
+
+    invalid, invalid_error = patcher.validate_file(
+        tmp_path / "folder" / ".." / "app.py"
+    )
+    sensitive, sensitive_error = patcher.validate_file(tmp_path / "api_token.py")
+    blocked, blocked_error = patcher.validate_file(blocked_dir / "app.py")
+
+    assert invalid is False
+    assert "invalid" in (invalid_error or "").lower()
+    assert sensitive is False
+    assert "sensitive" in (sensitive_error or "").lower()
+    assert blocked is False
+    assert "restricted" in (blocked_error or "").lower()
+
+
+def test_patcher_refuses_non_directory_parent_and_non_regular_target(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "not-a-directory").write_text("x")
+    directory_target = project / "directory.py"
+    directory_target.mkdir()
+    patcher = Patcher(project_root=project)
+
+    parent_result = patcher.apply_patch(project / "not-a-directory" / "app.py", "new")
+    target_result = patcher.apply_patch(directory_target, "new")
+
+    assert parent_result.success is False
+    assert "parent" in (parent_result.error or "").lower()
+    assert target_result.success is False
+    assert "regular file" in (target_result.error or "").lower()
+
+
+def test_patcher_refuses_oversized_and_binary_target_files(tmp_path):
+    patcher = Patcher(project_root=tmp_path)
+    oversized = tmp_path / "large.py"
+    oversized.write_bytes(b"x" * (patcher_module.MAX_FILE_SIZE + 1))
+    binary = tmp_path / "binary.py"
+    binary.write_bytes(b"\xff\xfe")
+
+    oversized_result = patcher.apply_patch(oversized, "new")
+    binary_result = patcher.apply_patch(binary, "new")
+
+    assert oversized_result.success is False
+    assert "too large" in (oversized_result.error or "").lower()
+    assert binary_result.success is False
+    assert "binary" in (binary_result.error or "").lower()
+
+
+def test_generate_diff_returns_none_for_refused_target(tmp_path):
+    target = tmp_path / "linked.py"
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside")
+    target.symlink_to(outside)
+
+    assert Patcher(project_root=tmp_path).generate_diff(target, "new") is None
+
+
+def test_backup_uses_verified_original_bytes_when_target_is_raced(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("verified original")
+    raced_replacement = project / "replacement.py"
+    raced_replacement.write_text("raced replacement")
+    patcher = Patcher(project_root=project)
+    original_write_temp = patcher._write_temporary_file
+
+    def race_after_backup(*args, **kwargs):
+        os.replace(raced_replacement, target)
+        return original_write_temp(*args, **kwargs)
+
+    monkeypatch.setattr(patcher, "_write_temporary_file", race_after_backup)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    backups = list(patcher.backup_dir.glob("*.tx.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "verified original"
+    assert target.read_text() == "raced replacement"
+
+
+def test_existing_target_removal_and_new_target_appearance_fail_closed(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    existing = project / "app.py"
+    existing.write_text("original")
+    new_target = project / "requirements.txt"
+    existing_patcher = Patcher(project_root=project)
+    new_patcher = Patcher(project_root=project)
+    verify_existing = existing_patcher._verify_target_unchanged
+    verify_new = new_patcher._verify_target_unchanged
+
+    def remove_existing(*args, **kwargs):
+        existing.unlink()
+        return verify_existing(*args, **kwargs)
+
+    def create_new_target(*args, **kwargs):
+        new_target.write_text("unexpected")
+        return verify_new(*args, **kwargs)
+
+    monkeypatch.setattr(existing_patcher, "_verify_target_unchanged", remove_existing)
+    monkeypatch.setattr(new_patcher, "_verify_target_unchanged", create_new_target)
+
+    removed_result = existing_patcher.apply_patch(existing, "new")
+    appeared_result = new_patcher.apply_patch(new_target, "new")
+
+    assert removed_result.success is False
+    assert not existing.exists()
+    assert appeared_result.success is False
+    assert new_target.read_text() == "unexpected"
+
+
+def test_temporary_file_failures_clean_up_and_close_descriptors(tmp_path, monkeypatch):
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    original_fsync = patcher_module.os.fsync
+    closed_descriptors = []
+    original_close = patcher_module.os.close
+
+    def fail_fsync(descriptor):
+        raise OSError("injected fsync failure")
+
+    def record_close(descriptor):
+        closed_descriptors.append(descriptor)
+        return original_close(descriptor)
+
+    monkeypatch.setattr(patcher_module.os, "fsync", fail_fsync)
+    monkeypatch.setattr(patcher_module.os, "close", record_close)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError):
+            patcher._write_temporary_file(parent_fd, b"new", 0o600)
+    finally:
+        original_fsync(parent_fd)
+        original_close(parent_fd)
+
+    assert closed_descriptors
+    assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
+
+
+def test_apply_patch_cleans_temporary_file_when_rename_or_directory_sync_fails(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(
+        patcher_module.os,
+        "rename",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failure")),
+    )
+
+    rename_result = patcher.apply_patch(target, "new")
+
+    assert rename_result.success is False
+    assert target.read_text() == "original"
+    assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
+
+    monkeypatch.undo()
+    original_fsync = patcher_module.os.fsync
+    calls = []
+
+    def fail_directory_sync(descriptor):
+        calls.append(descriptor)
+        if len(calls) == 4:
+            raise OSError("directory fsync failure")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(patcher_module.os, "fsync", fail_directory_sync)
+    sync_result = patcher.apply_patch(target, "newer")
+
+    assert sync_result.success is False
+    assert target.read_text() == "newer"
+    assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
+
+
+def test_write_all_rejects_zero_length_write(monkeypatch):
+    monkeypatch.setattr(patcher_module.os, "write", lambda *args, **kwargs: 0)
+
+    with pytest.raises(OSError, match="complete"):
+        Patcher._write_all(123, b"content")
+
+
+def test_open_unique_file_retries_collision_with_exclusive_creation(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    tokens = iter(("taken", "fresh"))
+    (tmp_path / ".ternexar-patch-taken.tmp").write_text("occupied")
+    monkeypatch.setattr(patcher_module.secrets, "token_hex", lambda _: next(tokens))
+    descriptor, name = patcher._open_unique_file(
+        parent_fd, ".ternexar-patch-", ".tmp", 0o600
+    )
+    try:
+        assert name == ".ternexar-patch-fresh.tmp"
+        assert stat.S_IMODE(os.fstat(descriptor).st_mode) == 0o600
+    finally:
+        os.close(descriptor)
+        os.unlink(name, dir_fd=parent_fd)
+        os.close(parent_fd)
+
+
+@pytest.mark.parametrize(
+    ("attribute", "expected"),
+    [("O_NOFOLLOW", "no-follow"), ("O_DIRECTORY", "no-follow")],
+)
+def test_platform_constant_capability_absence_fails_closed(
+    tmp_path, monkeypatch, attribute, expected
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    monkeypatch.delattr(patcher_module.os, attribute)
+
+    result = Patcher(project_root=tmp_path).apply_patch(target, "new")
+
+    assert result.success is False
+    assert expected in (result.error or "").lower()
+
+
+def test_platform_stat_capability_absence_fails_closed(tmp_path, monkeypatch):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    monkeypatch.setattr(patcher_module.os, "supports_follow_symlinks", set())
+
+    result = Patcher(project_root=tmp_path).apply_patch(target, "new")
+
+    assert result.success is False
+    assert "cannot inspect" in (result.error or "").lower()
+
+
+def test_patcher_refuses_project_root_file_and_allows_nested_regular_file(tmp_path):
+    root_file = tmp_path / "root-file"
+    root_file.write_text("not a directory")
+    root_file_result = Patcher(project_root=root_file).apply_patch(
+        root_file / "app.py", "new"
+    )
+
+    project = tmp_path / "project"
+    nested = project / "nested" / "app.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("old")
+    nested_result = Patcher(project_root=project).apply_patch(nested, "new")
+
+    assert root_file_result.success is False
+    assert "not a directory" in (root_file_result.error or "").lower()
+    assert nested_result.success is True
+    assert nested.read_text() == "new"
+
+
+def test_read_target_rejects_opened_directory_and_growth_after_open(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("small")
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original_open = patcher_module.os.open
+
+    def open_directory(name, flags, *args, **kwargs):
+        if name == target_name and kwargs.get("dir_fd") == parent_fd:
+            return os.dup(directory_fd)
+        return original_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", open_directory)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="regular file"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        monkeypatch.undo()
+        os.close(directory_fd)
+        os.close(parent_fd)
+
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    monkeypatch.setattr(
+        patcher_module.os,
+        "read",
+        lambda *_: b"x" * (patcher_module.MAX_FILE_SIZE + 1),
+    )
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="too large"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        os.close(parent_fd)
+
+
+def test_read_target_reports_inspection_and_no_follow_open_failures(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    original_stat = patcher_module.os.stat
+
+    def fail_target_stat(name, *args, **kwargs):
+        if name == target_name and kwargs.get("dir_fd") == parent_fd:
+            raise OSError("inspection failure")
+        return original_stat(name, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "stat", fail_target_stat)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="inspect"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        monkeypatch.undo()
+        os.close(parent_fd)
+
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    original_open = patcher_module.os.open
+
+    def fail_target_open(name, flags, *args, **kwargs):
+        if name == target_name and kwargs.get("dir_fd") == parent_fd:
+            raise OSError(errno.ELOOP, "symlink loop")
+        return original_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", fail_target_open)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="symlink"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        os.close(parent_fd)
+
+
+def test_backup_directory_and_file_creation_failures_are_controlled(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    root_fd = patcher._open_project_root()
+    monkeypatch.setattr(
+        patcher_module.os,
+        "mkdir",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("mkdir failure")),
+    )
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="create backup"):
+            patcher._open_or_create_directory(root_fd, "backups")
+    finally:
+        monkeypatch.undo()
+        os.close(root_fd)
+
+    symlink = tmp_path / "linked-backups"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink.symlink_to(outside, target_is_directory=True)
+    root_fd = patcher._open_project_root()
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="symlink"):
+            patcher._open_or_create_directory(root_fd, "linked-backups")
+    finally:
+        os.close(root_fd)
+
+    regular = tmp_path / "not-a-directory"
+    regular.write_text("x")
+    root_fd = patcher._open_project_root()
+    try:
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="not a directory"
+        ):
+            patcher._open_or_create_directory(root_fd, "not-a-directory")
+    finally:
+        os.close(root_fd)
+
+
+def test_backup_write_failure_cleans_partial_backup(tmp_path, monkeypatch):
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(
+        patcher,
+        "_write_all",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failure")),
+    )
+
+    with pytest.raises(OSError, match="write failure"):
+        patcher._write_backup("app.py", b"original")
+
+    assert not list(patcher.backup_dir.glob("*.tx.bak"))
+
+
+def test_unique_file_creation_error_and_verify_failure_paths(tmp_path, monkeypatch):
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    monkeypatch.setattr(
+        patcher_module.os,
+        "open",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("open failure")),
+    )
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="temporary file"):
+            patcher._open_unique_file(parent_fd, ".tmp-", ".tmp", 0o600)
+    finally:
+        monkeypatch.undo()
+        os.close(parent_fd)
+
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    state = patcher._read_target(parent_fd, target_name)
+    target.unlink()
+    target.mkdir()
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="type changed"):
+            patcher._verify_target_unchanged(parent_fd, target_name, state)
+    finally:
+        os.close(parent_fd)
+
+
+def test_generate_diff_exception_and_oversized_patch_rejection(tmp_path, monkeypatch):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    monkeypatch.setattr(
+        patcher,
+        "_target_parts",
+        lambda *_: (_ for _ in ()).throw(
+            patcher_module.PatcherSecurityError("blocked")
+        ),
+    )
+    assert patcher.generate_diff(target, "new") is None
+    monkeypatch.undo()
+
+    oversized_content = "\n".join(f"line-{index}" for index in range(101))
+    result = patcher.apply_patch(target, oversized_content)
+
+    assert result.success is False
+    assert "too large" in (result.error or "").lower()
+    assert target.read_text() == "original"
+
+
+def test_parent_open_and_target_descriptor_failures_are_controlled(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    nested = project / "nested"
+    nested.mkdir(parents=True)
+    target = nested / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=project)
+    original_open = patcher_module.os.open
+
+    def fail_parent_open(name, flags, *args, **kwargs):
+        if name == "nested":
+            raise OSError("parent open failure")
+        return original_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", fail_parent_open)
+    with pytest.raises(patcher_module.PatcherSecurityError, match="target parent"):
+        patcher._open_parent_directory(("nested", "app.py"))
+    monkeypatch.undo()
+
+    parent_fd, target_name = patcher._open_parent_directory(("nested", "app.py"))
+    original_fstat = patcher_module.os.fstat
+
+    def oversized_fstat(descriptor):
+        values = list(original_fstat(descriptor))
+        values[6] = patcher_module.MAX_FILE_SIZE + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(patcher_module.os, "fstat", oversized_fstat)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="too large"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        monkeypatch.undo()
+        os.close(parent_fd)
+
+    parent_fd, target_name = patcher._open_parent_directory(("nested", "app.py"))
+
+    def fail_target_open(name, flags, *args, **kwargs):
+        if name == target_name and kwargs.get("dir_fd") == parent_fd:
+            raise OSError(errno.EACCES, "read denied")
+        return original_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", fail_target_open)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="read patch"):
+            patcher._read_target(parent_fd, target_name)
+    finally:
+        os.close(parent_fd)
+
+
+def test_backup_descriptor_and_unique_name_failure_paths_are_controlled(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    root_fd = patcher._open_project_root()
+    original_open = patcher_module.os.open
+
+    def fail_backup_open(name, flags, *args, **kwargs):
+        if name == "backups":
+            raise OSError("backup open failure")
+        return original_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "open", fail_backup_open)
+    try:
+        with pytest.raises(
+            patcher_module.PatcherSecurityError, match="backup directory"
+        ):
+            patcher._open_or_create_directory(root_fd, "backups")
+    finally:
+        monkeypatch.undo()
+        os.close(root_fd)
+
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    (tmp_path / ".occupied.tmp").write_text("occupied")
+    monkeypatch.setattr(patcher_module.secrets, "token_hex", lambda _: "occupied")
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="unique"):
+            patcher._open_unique_file(parent_fd, ".", ".tmp", 0o600)
+    finally:
+        os.close(parent_fd)
+
+
+def test_verify_and_generate_diff_operational_errors_are_controlled(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, target_name = patcher._open_parent_directory(("app.py",))
+    state = patcher._read_target(parent_fd, target_name)
+    original_stat = patcher_module.os.stat
+
+    def fail_verify_stat(name, *args, **kwargs):
+        if name == target_name and kwargs.get("dir_fd") == parent_fd:
+            raise OSError("verification failure")
+        return original_stat(name, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "stat", fail_verify_stat)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="verify"):
+            patcher._verify_target_unchanged(parent_fd, target_name, state)
+    finally:
+        monkeypatch.undo()
+        os.close(parent_fd)
+
+    monkeypatch.setattr(patcher, "validate_file", lambda *_: (True, None))
+    monkeypatch.setattr(
+        patcher,
+        "_read_target",
+        lambda *_: (_ for _ in ()).throw(
+            patcher_module.PatcherSecurityError("read failure")
+        ),
+    )
+    assert patcher.generate_diff(target, "new") is None
