@@ -96,6 +96,32 @@ def test_audit_enforces_directory_and_file_permissions(tmp_path):
     assert os.stat(manager.log_file).st_mode & 0o777 == 0o600
 
 
+def test_audit_creates_new_files_with_owner_only_permissions(tmp_path):
+    manager = make_manager(tmp_path)
+
+    manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK")
+
+    assert os.stat(manager.log_file).st_mode & 0o777 == 0o600
+
+
+def test_audit_corrects_existing_file_permissions_before_writing(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    manager.log_file.write_text("")
+    os.chmod(manager.log_file, 0o644)
+    observed_modes = []
+    original_fdopen = os.fdopen
+
+    def inspect_fdopen(fd, *args, **kwargs):
+        observed_modes.append(os.stat(manager.log_file).st_mode & 0o777)
+        return original_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(audit_module.os, "fdopen", inspect_fdopen)
+
+    manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK")
+
+    assert observed_modes == [0o600]
+
+
 def test_audit_skips_malformed_jsonl_and_preserves_valid_records(tmp_path):
     manager = make_manager(tmp_path)
     valid_first = {"command": "first"}
@@ -103,6 +129,15 @@ def test_audit_skips_malformed_jsonl_and_preserves_valid_records(tmp_path):
     manager.log_file.write_text(
         f"{json.dumps(valid_first)}\nnot-json\n{json.dumps(valid_last)}\n"
     )
+
+    assert manager.get_records() == [valid_first, valid_last]
+
+
+def test_audit_skips_blank_jsonl_lines_between_valid_records(tmp_path):
+    manager = make_manager(tmp_path)
+    valid_first = {"command": "first"}
+    valid_last = {"command": "last"}
+    manager.log_file.write_text(f"{json.dumps(valid_first)}\n\n   \n{json.dumps(valid_last)}\n")
 
     assert manager.get_records() == [valid_first, valid_last]
 
@@ -147,15 +182,27 @@ def test_audit_jsonl_serialization_prevents_newline_injection(tmp_path):
     assert manager.get_records()[0]["command"] == injected_command
 
 
+def test_audit_does_not_redact_benign_similar_text(tmp_path):
+    manager = make_manager(tmp_path)
+    command = "monkey=value"
+
+    manager.log_event(command, "LOW", "PASS", "ALLOW", "MIN", "START", "OK")
+
+    assert manager.get_records()[0]["command"] == command
+
+
 def test_audit_write_failures_remain_non_fatal_and_preserve_public_api(tmp_path, monkeypatch):
     manager = make_manager(tmp_path)
+    called = []
 
-    def fail_open(*args, **kwargs):
+    def fail_fdopen(*args, **kwargs):
+        called.append(True)
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr("builtins.open", fail_open)
+    monkeypatch.setattr(audit_module.os, "fdopen", fail_fdopen)
 
     assert manager.log_event("ls", "LOW", "PASS", "ALLOW", "MIN", "START", "OK") is None
+    assert called == [True]
 
 
 def test_audit_clear_failure_preserves_existing_history(tmp_path, monkeypatch):

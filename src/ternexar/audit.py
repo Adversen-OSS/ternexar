@@ -44,9 +44,20 @@ class AuditManager:
     def _write_record(self, record: Dict) -> None:
         """Append one JSONL record while enforcing owner-only file permissions."""
         self._ensure_dir()
-        with open(self.log_file, "a", encoding="utf-8") as log_handle:
-            log_handle.write(json.dumps(record) + "\n")
-        os.chmod(self.log_file, 0o600)
+        descriptor: Optional[int] = os.open(
+            self.log_file,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            assert descriptor is not None
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as log_handle:
+                descriptor = None
+                log_handle.write(json.dumps(record) + "\n")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def log_event(
         self,
