@@ -45,6 +45,14 @@ class PatcherSecurityError(RuntimeError):
     """A fail-closed filesystem safety violation."""
 
 
+class PatcherRollbackError(PatcherSecurityError):
+    """An exchange was committed and could not be undone.
+
+    The target holds the replacement and the previous directory entry survives
+    under the temporary name, so that entry must never be cleaned up.
+    """
+
+
 @dataclass
 class PatchResult:
     success: bool
@@ -130,18 +138,23 @@ class Patcher:
                 f"Unable to open project root safely: {error}"
             ) from error
 
-    def _open_parent_directory(self, parts: Tuple[str, ...]) -> Tuple[int, str]:
-        directory_fd = self._open_project_root()
+    def _descend_parent(self, root_fd: int, parts: Tuple[str, ...]) -> int:
+        """Walk to the target parent using descriptors anchored at ``root_fd``.
+
+        The caller retains ownership of ``root_fd`` so the same verified root
+        descriptor can also anchor the backup directory.
+        """
+        directory_fd = os.dup(root_fd)
         try:
             for part in parts[:-1]:
-                next_fd = self._open_verified_directory(
+                previous_fd = directory_fd
+                directory_fd = self._open_verified_directory(
                     part,
-                    dir_fd=directory_fd,
+                    dir_fd=previous_fd,
                     error_context="Target parent directory",
                 )
-                os.close(directory_fd)
-                directory_fd = next_fd
-            return directory_fd, parts[-1]
+                os.close(previous_fd)
+            return directory_fd
         except PatcherSecurityError:
             os.close(directory_fd)
             raise
@@ -150,6 +163,13 @@ class Patcher:
             raise PatcherSecurityError(
                 f"Unable to open target parent safely: {error}"
             ) from error
+
+    def _open_parent_directory(self, parts: Tuple[str, ...]) -> Tuple[int, str]:
+        root_fd = self._open_project_root()
+        try:
+            return self._descend_parent(root_fd, parts), parts[-1]
+        finally:
+            os.close(root_fd)
 
     @staticmethod
     def _identity(file_stat: os.stat_result) -> Tuple[int, int, int, int, int]:
@@ -295,9 +315,19 @@ class Patcher:
         diff_text = "\n".join(diff)
         return diff_text or None
 
+    @staticmethod
+    def _unlink_quietly(directory_fd: int, name: str) -> None:
+        """Best-effort cleanup that must not mask the failure being reported."""
+        try:
+            os.unlink(name, dir_fd=directory_fd)
+        except OSError:
+            pass
+
     def _open_or_create_directory(self, parent_fd: int, name: str) -> int:
+        created = False
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
+            created = True
         except FileExistsError:
             pass
         except OSError as error:
@@ -313,6 +343,8 @@ class Patcher:
                 error_context="Backup directory",
             )
             os.fchmod(descriptor, 0o700)
+            if created:
+                os.fsync(parent_fd)
             opened_descriptor = descriptor
             descriptor = None
             return opened_descriptor
@@ -356,12 +388,10 @@ class Patcher:
                 raise OSError("Unable to write complete file contents.")
             view = view[written:]
 
-    def _write_backup(self, target_name: str, content: bytes) -> Path:
-        root_fd = self._open_project_root()
+    def _write_backup(self, root_fd: int, target_name: str, content: bytes) -> Path:
+        """Persist verified original bytes below the already verified root."""
         ternexar_fd: Optional[int] = None
         backup_fd: Optional[int] = None
-        file_fd: Optional[int] = None
-        backup_name: Optional[str] = None
         try:
             ternexar_fd = self._open_or_create_directory(root_fd, ".ternexar")
             backup_fd = self._open_or_create_directory(ternexar_fd, "backups")
@@ -372,53 +402,42 @@ class Patcher:
                 ".tx.bak",
                 NEW_FILE_MODE,
             )
-            self._write_all(file_fd, content)
-            os.fsync(file_fd)
-            os.close(file_fd)
-            file_fd = None
-            backup_path = self.backup_dir / backup_name
-            backup_name = None
-            return backup_path
-        finally:
-            if file_fd is not None:
-                os.close(file_fd)
-            if backup_name is not None and backup_fd is not None:
+            try:
                 try:
-                    os.unlink(backup_name, dir_fd=backup_fd)
-                except OSError:
-                    pass
+                    self._write_all(file_fd, content)
+                    os.fsync(file_fd)
+                finally:
+                    os.close(file_fd)
+                # The backup entry must outlive a crash that keeps the patch.
+                os.fsync(backup_fd)
+            except OSError:
+                self._unlink_quietly(backup_fd, backup_name)
+                raise
+            return self.backup_dir / backup_name
+        finally:
             if backup_fd is not None:
                 os.close(backup_fd)
             if ternexar_fd is not None:
                 os.close(ternexar_fd)
-            os.close(root_fd)
 
     def _write_temporary_file(self, parent_fd: int, content: bytes, mode: int) -> str:
-        descriptor: Optional[int] = None
-        temporary_name: Optional[str] = None
+        descriptor, temporary_name = self._open_unique_file(
+            parent_fd, ".ternexar-patch-", ".tmp", NEW_FILE_MODE
+        )
         try:
-            descriptor, temporary_name = self._open_unique_file(
-                parent_fd, ".ternexar-patch-", ".tmp", NEW_FILE_MODE
-            )
-            self._write_all(descriptor, content)
-            os.fsync(descriptor)
-            os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = None
-            return temporary_name
+            try:
+                self._write_all(descriptor, content)
+                os.fsync(descriptor)
+                os.fchmod(descriptor, mode)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         except OSError as error:
+            self._unlink_quietly(parent_fd, temporary_name)
             raise PatcherSecurityError(
                 f"Unable to write temporary patch safely: {error}"
             ) from error
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-            if temporary_name is not None and descriptor is not None:
-                try:
-                    os.unlink(temporary_name, dir_fd=parent_fd)
-                except OSError:
-                    pass
+        return temporary_name
 
     @staticmethod
     def _renameat2(
@@ -461,9 +480,10 @@ class Patcher:
                 RENAME_EXCHANGE,
             )
         except (OSError, PatcherSecurityError) as error:
-            raise PatcherSecurityError(
-                "Atomic commit verification failed and rollback failed; "
-                f"the target may contain the replacement: {error}"
+            raise PatcherRollbackError(
+                "Atomic commit verification failed and rollback failed; the "
+                "target contains the replacement and the previous entry "
+                f"survives as {temporary_name!r}: {error}"
             ) from error
 
     def _atomic_commit(
@@ -511,8 +531,12 @@ class Patcher:
                 f"Atomic replacement could not verify the exchanged target: {error}"
             ) from error
 
-        if not exchanged_state.exists or not self._same_inode(
-            exchanged_state.identity, target_state.identity
+        # Identity alone would miss an in-place rewrite of the same inode, which
+        # would destroy bytes that were never in the reviewed diff or the backup.
+        if (
+            not exchanged_state.exists
+            or not self._same_inode(exchanged_state.identity, target_state.identity)
+            or exchanged_state.raw_content != target_state.raw_content
         ):
             self._rollback_exchange(parent_fd, temporary_name, target_name)
             raise PatcherSecurityError(
@@ -608,11 +632,14 @@ class Patcher:
         if platform_error:
             return PatchResult(success=False, error=platform_error)
 
+        root_fd: Optional[int] = None
         parent_fd: Optional[int] = None
         temporary_name: Optional[str] = None
         try:
             parts = self._target_parts(file_path)
-            parent_fd, target_name = self._open_parent_directory(parts)
+            root_fd = self._open_project_root()
+            parent_fd = self._descend_parent(root_fd, parts)
+            target_name = parts[-1]
             target_state = self._read_target(parent_fd, target_name)
             diff = self._make_diff(target_name, target_state.content, new_content)
             if not diff:
@@ -626,13 +653,23 @@ class Patcher:
                     success=False, error="Patch too large (Max 100 lines changed)."
                 )
 
+            try:
+                encoded_content = new_content.encode("utf-8")
+            except UnicodeEncodeError as error:
+                return PatchResult(
+                    success=False,
+                    error=f"Replacement content is not valid UTF-8 text: {error}",
+                )
+
             if target_state.exists:
-                backup_path = self._write_backup(target_name, target_state.raw_content)
+                backup_path = self._write_backup(
+                    root_fd, target_name, target_state.raw_content
+                )
             else:
                 backup_path = None
 
             temporary_name = self._write_temporary_file(
-                parent_fd, new_content.encode("utf-8"), target_state.mode
+                parent_fd, encoded_content, target_state.mode
             )
             self._verify_target_unchanged(parent_fd, target_name, target_state)
             exchanged_old_name = self._atomic_commit(
@@ -658,18 +695,24 @@ class Patcher:
                 diff,
                 post_commit_error,
             )
+        except PatcherRollbackError as error:
+            # The previous directory entry is the only surviving copy of the
+            # original file, so it must be left in place for manual recovery.
+            temporary_name = None
+            return PatchResult(
+                success=False, error=f"Failed to apply patch safely: {error}"
+            )
         except (OSError, PatcherSecurityError) as error:
             return PatchResult(
                 success=False, error=f"Failed to apply patch safely: {error}"
             )
         finally:
             if temporary_name is not None and parent_fd is not None:
-                try:
-                    os.unlink(temporary_name, dir_fd=parent_fd)
-                except OSError:
-                    pass
+                self._unlink_quietly(parent_fd, temporary_name)
             if parent_fd is not None:
                 os.close(parent_fd)
+            if root_fd is not None:
+                os.close(root_fd)
 
 
 patcher = Patcher()

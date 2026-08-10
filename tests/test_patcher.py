@@ -426,14 +426,21 @@ def test_apply_patch_cleans_temporary_file_when_rename_or_directory_sync_fails(
 
     monkeypatch.undo()
     original_fsync = patcher_module.os.fsync
-    calls = []
+    original_commit = patcher._atomic_commit
+    committed = False
+
+    def note_commit(*args, **kwargs):
+        nonlocal committed
+        commit_result = original_commit(*args, **kwargs)
+        committed = True
+        return commit_result
 
     def fail_directory_sync(descriptor):
-        calls.append(descriptor)
-        if len(calls) == 4:
+        if committed:
             raise OSError("directory fsync failure")
         return original_fsync(descriptor)
 
+    monkeypatch.setattr(patcher, "_atomic_commit", note_commit)
     monkeypatch.setattr(patcher_module.os, "fsync", fail_directory_sync)
     sync_result = patcher.apply_patch(target, "newer")
 
@@ -640,8 +647,12 @@ def test_backup_write_failure_cleans_partial_backup(tmp_path, monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failure")),
     )
 
-    with pytest.raises(OSError, match="write failure"):
-        patcher._write_backup("app.py", b"original")
+    root_fd = patcher._open_project_root()
+    try:
+        with pytest.raises(OSError, match="write failure"):
+            patcher._write_backup(root_fd, "app.py", b"original")
+    finally:
+        os.close(root_fd)
 
     assert not list(patcher.backup_dir.glob("*.tx.bak"))
 
@@ -1018,8 +1029,12 @@ def test_backup_and_temporary_cleanup_errors_are_suppressed_after_primary_failur
         "unlink",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("cleanup failure")),
     )
-    with pytest.raises(OSError, match="write failure"):
-        patcher._write_backup("app.py", b"original")
+    root_fd = patcher._open_project_root()
+    try:
+        with pytest.raises(OSError, match="write failure"):
+            patcher._write_backup(root_fd, "app.py", b"original")
+    finally:
+        os.close(root_fd)
 
     parent_fd, _ = patcher._open_parent_directory(("app.py",))
     try:
@@ -1112,3 +1127,219 @@ def test_post_commit_old_entry_cleanup_failure_is_a_success_with_warning(
     assert result.success is True
     assert target.read_text() == "new"
     assert "committed" in (result.error or "").lower()
+
+
+def test_atomic_commit_refuses_in_place_content_change_before_exchange(
+    tmp_path, monkeypatch
+):
+    """An attacker rewriting the target in place must not silently lose bytes."""
+    target = tmp_path / "app.py"
+    target.write_text("verified original")
+    patcher = Patcher(project_root=tmp_path)
+    original_renameat2 = patcher._renameat2
+    injected = False
+
+    def inject_before_exchange(*args):
+        nonlocal injected
+        if args[-1] == patcher_module.RENAME_EXCHANGE and not injected:
+            injected = True
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("attacker injected")
+        return original_renameat2(*args)
+
+    monkeypatch.setattr(patcher, "_renameat2", inject_before_exchange)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    assert "changed before commit" in (result.error or "")
+    assert target.read_text() == "attacker injected"
+    assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
+
+
+def test_failed_rollback_preserves_the_surviving_original_entry(tmp_path, monkeypatch):
+    """A failed rollback must never delete the only copy of the previous entry."""
+    target = tmp_path / "app.py"
+    target.write_text("verified original")
+    raced = tmp_path / "raced.py"
+    raced.write_text("raced replacement")
+    patcher = Patcher(project_root=tmp_path)
+    original_renameat2 = patcher._renameat2
+    exchanges = 0
+
+    def swap_then_fail_rollback(*args):
+        nonlocal exchanges
+        exchanges += 1
+        if exchanges == 1:
+            os.replace(raced, target)
+            return original_renameat2(*args)
+        raise OSError(errno.EBUSY, "rollback failure")
+
+    monkeypatch.setattr(patcher, "_renameat2", swap_then_fail_rollback)
+
+    result = patcher.apply_patch(target, "new content")
+
+    survivors = list(tmp_path.glob(".ternexar-patch-*.tmp"))
+    assert result.success is False
+    assert "rollback failed" in (result.error or "")
+    assert len(survivors) == 1
+    assert survivors[0].read_text() == "raced replacement"
+
+
+def test_target_swapped_to_symlink_before_exchange_is_rolled_back(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside content")
+    patcher = Patcher(project_root=project)
+    original_renameat2 = patcher._renameat2
+    swapped = False
+
+    def swap_to_symlink(*args):
+        nonlocal swapped
+        if args[-1] == patcher_module.RENAME_EXCHANGE and not swapped:
+            swapped = True
+            target.unlink()
+            target.symlink_to(outside)
+        return original_renameat2(*args)
+
+    monkeypatch.setattr(patcher, "_renameat2", swap_to_symlink)
+
+    result = patcher.apply_patch(target, "new content")
+
+    assert result.success is False
+    assert target.is_symlink()
+    assert outside.read_text() == "outside content"
+    assert not list(project.glob(".ternexar-patch-*.tmp"))
+
+
+def test_backup_directory_entry_is_synced_before_replacement(tmp_path, monkeypatch):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+    original_fsync = patcher_module.os.fsync
+    synced_directories = []
+
+    def record_directory_fsync(descriptor):
+        info = os.fstat(descriptor)
+        if stat.S_ISDIR(info.st_mode):
+            synced_directories.append((info.st_dev, info.st_ino))
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(patcher_module.os, "fsync", record_directory_fsync)
+
+    result = patcher.apply_patch(target, "new content")
+    backups = os.stat(patcher.backup_dir)
+    root = os.stat(tmp_path)
+
+    assert result.success is True
+    assert (backups.st_dev, backups.st_ino) in synced_directories
+    assert (root.st_dev, root.st_ino) in synced_directories
+
+
+def test_backup_stays_in_the_verified_root_when_the_root_path_is_swapped(
+    tmp_path, monkeypatch
+):
+    """Backups must follow the verified root descriptor, not the root pathname."""
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original")
+    attacker_root = tmp_path / "attacker-root"
+    attacker_root.mkdir()
+    displaced = tmp_path / "displaced"
+    patcher = Patcher(project_root=project)
+    original_write_backup = patcher._write_backup
+
+    def swap_root_then_backup(*args, **kwargs):
+        os.rename(project, displaced)
+        os.rename(attacker_root, project)
+        return original_write_backup(*args, **kwargs)
+
+    monkeypatch.setattr(patcher, "_write_backup", swap_root_then_backup)
+
+    result = patcher.apply_patch(target, "new content")
+    backups = list((displaced / ".ternexar" / "backups").glob("*.tx.bak"))
+
+    assert result.success is True
+    assert not (project / ".ternexar").exists()
+    assert len(backups) == 1
+    assert backups[0].read_text() == "original"
+
+
+def test_unencodable_replacement_content_fails_before_any_mutation(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("original")
+    patcher = Patcher(project_root=tmp_path)
+
+    result = patcher.apply_patch(target, "lone surrogate \ud800")
+
+    assert result.success is False
+    assert "utf-8" in (result.error or "").lower()
+    assert target.read_text() == "original"
+    assert not patcher.backup_dir.exists()
+
+
+def test_temporary_file_close_failure_never_double_closes_or_leaks(
+    tmp_path, monkeypatch
+):
+    patcher = Patcher(project_root=tmp_path)
+    parent_fd, _ = patcher._open_parent_directory(("app.py",))
+    original_close = patcher_module.os.close
+    closes = []
+
+    def failing_close(descriptor):
+        closes.append(descriptor)
+        original_close(descriptor)
+        if descriptor != parent_fd and closes.count(descriptor) == 1:
+            raise OSError(errno.EIO, "close failure")
+
+    monkeypatch.setattr(patcher_module.os, "close", failing_close)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="temporary patch"):
+            patcher._write_temporary_file(parent_fd, b"new", 0o600)
+    finally:
+        monkeypatch.undo()
+        os.close(parent_fd)
+
+    temporary_closes = [
+        descriptor for descriptor in closes if descriptor != parent_fd
+    ]
+    assert temporary_closes
+    assert len(temporary_closes) == len(set(temporary_closes))
+    assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
+
+
+def test_parent_descent_closes_new_descriptor_when_intermediate_close_fails(
+    tmp_path, monkeypatch
+):
+    """A failing intermediate close must not leak the freshly opened descriptor."""
+    project = tmp_path / "project"
+    nested = project / "nested"
+    nested.mkdir(parents=True)
+    (nested / "app.py").write_text("original")
+    patcher = Patcher(project_root=project)
+    root_fd = patcher._open_project_root()
+    original_close = patcher_module.os.close
+    closed = []
+
+    def fail_first_intermediate_close(descriptor):
+        closed.append(descriptor)
+        original_close(descriptor)
+        if len(closed) == 1:
+            raise OSError(errno.EIO, "close failure")
+
+    monkeypatch.setattr(patcher_module.os, "close", fail_first_intermediate_close)
+    try:
+        with pytest.raises(patcher_module.PatcherSecurityError, match="target parent"):
+            patcher._descend_parent(root_fd, ("nested", "app.py"))
+    finally:
+        monkeypatch.undo()
+        os.close(root_fd)
+
+    assert len(closed) == 2
+    assert len(set(closed)) == 2
