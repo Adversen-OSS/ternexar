@@ -55,11 +55,28 @@ class PatcherRollbackError(PatcherSecurityError):
 
 @dataclass
 class PatchResult:
+    """Outcome of a patch attempt.
+
+    Exactly three states are representable:
+
+    * ``success=False`` with ``error`` set: the replacement was **not**
+      committed and the target is untouched. Retrying is safe.
+    * ``success=True`` with neither ``error`` nor ``warning``: the replacement
+      committed cleanly (or the patch was an exact no-op).
+    * ``success=True`` with ``warning`` set: the replacement **did** commit, but
+      post-commit cleanup or durability degraded. The target holds the new
+      content, so callers must not retry; they must surface the warning.
+
+    ``error`` therefore always means "not applied", and ``success`` being true
+    implies ``error is None``.
+    """
+
     success: bool
     file_path: Optional[Path] = None
     backup_path: Optional[Path] = None
     error: Optional[str] = None
     diff: Optional[str] = None
+    warning: Optional[str] = None
 
 
 @dataclass
@@ -558,14 +575,16 @@ class Patcher:
                 backup_path=backup_path,
                 diff=diff,
             )
+        # The replacement is already committed, so this is never reported as a
+        # failed application; it is a warning the caller must surface instead.
         return PatchResult(
             success=True,
             file_path=file_path,
             backup_path=backup_path,
             diff=diff,
-            error=(
-                "Replacement committed, but directory durability sync failed: "
-                f"{durability_error}"
+            warning=(
+                "Replacement committed, but post-commit cleanup or durability "
+                f"sync failed: {durability_error}"
             ),
         )
 

@@ -270,12 +270,18 @@ class UI:
         ))
 
     def render_patch_applied(self, result):
-        """Render a success message after applying a patch."""
-        self.console.print(f"\n[success]✔ Patch applied successfully.[/]")
+        """Render the outcome of a committed patch, warnings included."""
+        warning = getattr(result, "warning", None)
+        if warning:
+            self.console.print(f"\n[warning]⚠ Patch applied with warnings.[/]")
+        else:
+            self.console.print(f"\n[success]✔ Patch applied successfully.[/]")
         if result.file_path:
             self.console.print(f"Modified: [bold white]{result.file_path}[/]")
         if result.backup_path:
             self.console.print(f"Backup: [dim]{result.backup_path}[/]")
+        if warning:
+            self.console.print(f"[warning]Post-commit warning:[/] {warning}")
         self.console.print("\n")
 
     def render_patch_cancelled(self):

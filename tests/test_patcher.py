@@ -446,7 +446,8 @@ def test_apply_patch_cleans_temporary_file_when_rename_or_directory_sync_fails(
 
     assert sync_result.success is True
     assert target.read_text() == "newer"
-    assert "committed" in (sync_result.error or "").lower()
+    assert sync_result.error is None
+    assert "committed" in (sync_result.warning or "").lower()
     assert not list(tmp_path.glob(".ternexar-patch-*.tmp"))
 
 
@@ -1126,7 +1127,8 @@ def test_post_commit_old_entry_cleanup_failure_is_a_success_with_warning(
 
     assert result.success is True
     assert target.read_text() == "new"
-    assert "committed" in (result.error or "").lower()
+    assert result.error is None
+    assert "committed" in (result.warning or "").lower()
 
 
 def test_atomic_commit_refuses_in_place_content_change_before_exchange(
@@ -1343,3 +1345,140 @@ def test_parent_descent_closes_new_descriptor_when_intermediate_close_fails(
 
     assert len(closed) == 2
     assert len(set(closed)) == 2
+
+
+def test_clean_commit_reports_no_error_and_no_warning(tmp_path):
+    """A normal patch stays an unqualified success."""
+    target = tmp_path / "app.py"
+    target.write_text("original")
+
+    result = Patcher(project_root=tmp_path).apply_patch(target, "new content")
+
+    assert result.success is True
+    assert result.error is None
+    assert result.warning is None
+    assert target.read_text() == "new content"
+
+
+def test_no_op_patch_reports_no_error_and_no_warning(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("identical")
+
+    result = Patcher(project_root=tmp_path).apply_patch(target, "identical")
+
+    assert result.success is True
+    assert result.error is None
+    assert result.warning is None
+    assert result.diff is None
+
+
+def test_pre_commit_failure_reports_error_and_no_warning(tmp_path):
+    """An uncommitted patch keeps success=False with error, never a warning."""
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside content")
+    target = project / "app.py"
+    target.symlink_to(outside)
+
+    result = Patcher(project_root=project).apply_patch(target, "new content")
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.warning is None
+    assert outside.read_text() == "outside content"
+
+
+def test_committed_patch_with_unlink_failure_is_a_warning_not_an_error(
+    tmp_path, monkeypatch
+):
+    """Exchanged-old-entry cleanup failure is partial success, not failure."""
+    target = tmp_path / "app.py"
+    target.write_text("old")
+    patcher = Patcher(project_root=tmp_path)
+    original_unlink = patcher_module.os.unlink
+    # Replacing os.unlink removes it from os.supports_dir_fd, so the real
+    # platform guard would otherwise refuse before reaching the commit path.
+    monkeypatch.setattr(patcher, "_secure_platform_error", lambda: None)
+
+    def fail_only_exchanged_old(name, *args, **kwargs):
+        if str(name).startswith(".ternexar-patch-"):
+            raise OSError("old entry cleanup failure")
+        return original_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(patcher_module.os, "unlink", fail_only_exchanged_old)
+
+    result = patcher.apply_patch(target, "new")
+
+    assert result.success is True
+    assert result.error is None
+    assert result.warning is not None
+    assert "cleanup" in result.warning.lower()
+    assert target.read_text() == "new"
+
+
+def test_committed_patch_with_directory_fsync_failure_is_a_warning(
+    tmp_path, monkeypatch
+):
+    """Durability sync failure after commit is partial success, not failure."""
+    target = tmp_path / "app.py"
+    target.write_text("old")
+    patcher = Patcher(project_root=tmp_path)
+    original_fsync = patcher_module.os.fsync
+    original_commit = patcher._atomic_commit
+    committed = False
+
+    def note_commit(*args, **kwargs):
+        nonlocal committed
+        commit_result = original_commit(*args, **kwargs)
+        committed = True
+        return commit_result
+
+    def fail_after_commit(descriptor):
+        if committed:
+            raise OSError("directory fsync failure")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(patcher, "_atomic_commit", note_commit)
+    monkeypatch.setattr(patcher_module.os, "fsync", fail_after_commit)
+
+    result = patcher.apply_patch(target, "new")
+
+    assert result.success is True
+    assert result.error is None
+    assert result.warning is not None
+    assert "durability" in result.warning.lower()
+    assert target.read_text() == "new"
+
+
+def test_success_never_carries_an_error_across_representative_outcomes(
+    tmp_path, monkeypatch
+):
+    """The contract invariant: success=True implies error is None."""
+    clean_target = tmp_path / "clean.py"
+    clean_target.write_text("old")
+    warned_target = tmp_path / "warned.py"
+    warned_target.write_text("old")
+    patcher = Patcher(project_root=tmp_path)
+
+    clean = patcher.apply_patch(clean_target, "new")
+
+    original_unlink = patcher_module.os.unlink
+
+    def fail_only_exchanged_old(name, *args, **kwargs):
+        if str(name).startswith(".ternexar-patch-"):
+            raise OSError("old entry cleanup failure")
+        return original_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(patcher, "_secure_platform_error", lambda: None)
+    monkeypatch.setattr(patcher_module.os, "unlink", fail_only_exchanged_old)
+    warned = patcher.apply_patch(warned_target, "new")
+    monkeypatch.undo()
+
+    refused = patcher.apply_patch(tmp_path / "image.png", "new")
+
+    for outcome in (clean, warned, refused):
+        assert outcome.success is not (outcome.error is not None)
+        if outcome.warning is not None:
+            assert outcome.success is True
+            assert outcome.error is None

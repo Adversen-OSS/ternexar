@@ -148,15 +148,28 @@ def handle_analyze(task: str):
             
             if patch_result.success:
                 ui.render_patch_applied(patch_result)
+                # A committed patch whose post-commit cleanup or durability sync
+                # failed must never be audited as an ordinary clean success.
+                if patch_result.warning:
+                    patch_action = "PATCH_APPLIED_WITH_WARNING"
+                    patch_outcome = "SUCCESS_WITH_WARNING"
+                    patch_notes = (
+                        f"Modified {result.proposed_file}; "
+                        f"post-commit warning: {patch_result.warning}"
+                    )
+                else:
+                    patch_action = "PATCH_APPLIED"
+                    patch_outcome = "SUCCESS"
+                    patch_notes = f"Modified {result.proposed_file}"
                 audit_manager.log_event(
                     command=f"tx analyze \"{task}\"",
                     risk_level="LOW",
                     gate_decision="PASS",
                     policy="ANALYZE",
                     confirmation_mode="STANDARD_CONFIRMATION",
-                    action_type="PATCH_APPLIED",
-                    result="SUCCESS",
-                    notes=f"Modified {result.proposed_file}"
+                    action_type=patch_action,
+                    result=patch_outcome,
+                    notes=patch_notes
                 )
             else:
                 ui.render_patch_failed(patch_result.error or "Unknown error")
