@@ -8,8 +8,8 @@
 - [x] Comprehensive Safety Testing.
 
 ## v1.1: Interactive Execution
-- [ ] Support for MEDIUM-risk commands (e.g., `pip install`).
-- [ ] Interactive `[y/N]` confirmation prompts.
+- [x] Support for MEDIUM-risk commands (e.g., `pip install`).
+- [x] Interactive `[y/N]` confirmation prompts.
 - [ ] Enhanced dependency checks for plan execution.
 
 ## v1.2: High-Stakes Guardrails

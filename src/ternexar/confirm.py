@@ -1,3 +1,5 @@
+import sys
+import typer
 from enum import Enum
 from dataclasses import dataclass
 from ternexar.gate import gate_engine, GateStatus, PolicyDecision
@@ -76,3 +78,26 @@ confirm_engine = ConfirmationEngine()
 def handle_confirm(command: str):
     result = confirm_engine.evaluate(command)
     ui.render_confirmation_report(result)
+
+
+def is_interactive_terminal() -> bool:
+    """Check if standard input is attached to an interactive TTY."""
+    return sys.stdin.isatty()
+
+
+def prompt_medium_confirmation(command: str, reason: str) -> bool:
+    """Prompt the user interactively for a MEDIUM-risk execution confirmation.
+
+    Accepts: 'y', 'Y', 'yes', 'YES'.
+    Declines: empty input, 'n', 'N', 'no', 'NO', invalid input, EOFError, KeyboardInterrupt.
+    """
+    if not is_interactive_terminal():
+        return False
+
+    ui.render_medium_confirmation_header(command, reason)
+    try:
+        response = typer.prompt("Proceed with MEDIUM-risk execution? [y/N]", default="n", show_default=False)
+        clean_resp = response.strip().lower()
+        return clean_resp in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        return False

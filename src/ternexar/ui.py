@@ -137,6 +137,26 @@ class UI:
         """Show a minimal confirmation message before execution."""
         self.console.print(f"[info]Executing LOW-risk command:[/] [bold white]{command}[/]")
 
+    def render_medium_confirmation_header(self, command: str, reason: str):
+        """Render a warning panel for MEDIUM-risk execution prompt."""
+        panel = Panel(
+            Text.from_markup(
+                f"[bold yellow]MEDIUM RISK COMMAND EXECUTION REQUESTED[/]\n\n"
+                f"Command: [bold white]{command}[/]\n"
+                f"Reason:  [dim]{reason}[/]\n\n"
+                f"[dim]Installing packages or running recursive commands can modify dependencies or files.[/]"
+            ),
+            title="[bold yellow]⚠ CONFIRMATION REQUIRED[/]",
+            border_style="yellow",
+            padding=(1, 2)
+        )
+        self.console.print(panel)
+
+    def render_execution_declined(self, command: str, reason: str):
+        """Render a notice when command execution is declined or cancelled."""
+        self.console.print(f"\n[warning]Execution Declined:[/] {reason}")
+        self.console.print(f"[dim]Command '[white]{command}[/white]' was not executed.[/]\n")
+
     def panel(
         self,
         content: str,

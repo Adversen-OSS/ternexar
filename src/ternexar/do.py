@@ -2,7 +2,12 @@ import shlex
 import subprocess
 from ternexar.risk import RiskLevel, risk_engine
 from ternexar.gate import gate_engine, GateStatus
-from ternexar.confirm import confirm_engine, ConfirmationMode
+from ternexar.confirm import (
+    ConfirmationMode,
+    confirm_engine,
+    is_interactive_terminal,
+    prompt_medium_confirmation,
+)
 from ternexar.audit import audit_manager
 from ternexar.ui import ui
 
@@ -48,7 +53,7 @@ def log_refusal(command: str, reason: str, gate_result=None, confirm_result=None
     ui.render_refusal(command, reason)
 
 def handle_do(command: str):
-    """Safely execute a LOW-risk, allowlisted command."""
+    """Safely execute a LOW or MEDIUM-risk command after safety validation and confirmation."""
     # 1. Structural checks
     if contains_forbidden_elements(command):
         log_refusal(command, "Command contains forbidden shell characters or chaining (e.g., |, &&, ;, >).")
@@ -58,40 +63,78 @@ def handle_do(command: str):
     gate_result = gate_engine.evaluate(command)
     confirm_result = confirm_engine.evaluate(command)
 
-    if gate_result.risk_level != RiskLevel.LOW:
+    if gate_result.risk_level in (RiskLevel.HIGH, RiskLevel.BLOCKED):
         log_refusal(
-            command, 
-            f"Only LOW risk commands are executable in v1.0. Risk detected: {gate_result.risk_level.value}",
+            command,
+            f"Execution refused for {gate_result.risk_level.value} risk level. Risk detected: {gate_result.risk_level.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
-    if gate_result.gate_decision != GateStatus.PASS:
+    if gate_result.gate_decision == GateStatus.BLOCK or confirm_result.mode == ConfirmationMode.REFUSED.value:
         log_refusal(
-            command, 
+            command,
             f"Command failed the execution gate. Status: {gate_result.gate_decision.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
-    if confirm_result.mode != ConfirmationMode.MINIMAL_CONFIRMATION.value:
-        log_refusal(
-            command, 
-            f"Command requires elevated confirmation ({confirm_result.mode}), which is not supported in v1.0.",
-            gate_result,
-            confirm_result
-        )
-        return
+    # 3. Risk-based Execution Boundary
+    if gate_result.risk_level == RiskLevel.LOW:
+        if not is_in_allowlist(command):
+            log_refusal(
+                command,
+                "Command is not in the strict v1.0 allowlist.",
+                gate_result,
+                confirm_result,
+            )
+            return
+        ui.render_minimal_confirmation(command)
 
-    # 3. Allowlist check
-    if not is_in_allowlist(command):
+    elif gate_result.risk_level == RiskLevel.MEDIUM:
+        if not is_interactive_terminal():
+            log_refusal(
+                command,
+                "Interactive confirmation required for MEDIUM risk command, but stdin is not interactive (non-TTY). Risk detected: MEDIUM",
+                gate_result,
+                confirm_result,
+            )
+            return
+
+        confirmed = prompt_medium_confirmation(command, gate_result.reason)
+        if not confirmed:
+            audit_manager.log_event(
+                command=command,
+                risk_level=gate_result.risk_level.value,
+                gate_decision=gate_result.gate_decision.value,
+                policy=gate_result.policy.value,
+                confirmation_mode=confirm_result.mode,
+                action_type="MEDIUM_DECLINED",
+                result="DECLINED",
+                notes="User declined interactive confirmation.",
+            )
+            ui.render_execution_declined(command, "User declined interactive confirmation.")
+            return
+
+        audit_manager.log_event(
+            command=command,
+            risk_level=gate_result.risk_level.value,
+            gate_decision=gate_result.gate_decision.value,
+            policy=gate_result.policy.value,
+            confirmation_mode=confirm_result.mode,
+            action_type="MEDIUM_CONFIRMED",
+            result="CONFIRMED",
+            notes="User granted explicit interactive confirmation.",
+        )
+
+    else:
         log_refusal(
-            command, 
-            "Command is not in the strict v1.0 allowlist.",
+            command,
+            f"Unsupported risk level for execution: {gate_result.risk_level.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
@@ -104,12 +147,10 @@ def handle_do(command: str):
         confirmation_mode=confirm_result.mode,
         action_type="EXECUTION_START",
         result="STARTED",
-        notes="Passing through safety pipeline."
+        notes="Passing through safety pipeline.",
     )
 
-    # 6. Execution
-    ui.render_minimal_confirmation(command)
-    
+    # 5. Execution
     try:
         args = shlex.split(command)
         result = subprocess.run(
@@ -117,9 +158,9 @@ def handle_do(command: str):
             shell=False,
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=30,
         )
-        
+
         exit_code = result.returncode
         stdout = result.stdout
         stderr = result.stderr
@@ -128,7 +169,7 @@ def handle_do(command: str):
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Error: Command timed out after 10 seconds."
+        stderr = "Error: Command timed out after 30 seconds."
         execution_status = "TIMEOUT"
     except Exception as e:
         exit_code = -1
@@ -136,7 +177,7 @@ def handle_do(command: str):
         stderr = f"Error: {str(e)}"
         execution_status = "ERROR"
 
-    # 7. Post-execution Audit
+    # 6. Post-execution Audit
     audit_manager.log_event(
         command=command,
         risk_level=gate_result.risk_level.value,
@@ -145,8 +186,8 @@ def handle_do(command: str):
         confirmation_mode=confirm_result.mode,
         action_type="EXECUTION_END",
         result=execution_status,
-        notes=f"Exit code: {exit_code}"
+        notes=f"Exit code: {exit_code}",
     )
 
-    # 8. UI Result
+    # 7. UI Result
     ui.render_execution_result(command, stdout, stderr, exit_code)
