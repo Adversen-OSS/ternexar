@@ -89,7 +89,7 @@ def prompt_medium_confirmation(command: str, reason: str) -> bool:
     """Prompt the user interactively for a MEDIUM-risk execution confirmation.
 
     Accepts: 'y', 'Y', 'yes', 'YES'.
-    Declines: empty input, 'n', 'N', 'no', 'NO', invalid input, EOFError, KeyboardInterrupt.
+    Declines: empty input, 'n', 'N', 'no', 'NO', invalid input, EOFError, KeyboardInterrupt, Abort.
     """
     if not is_interactive_terminal():
         return False
@@ -97,7 +97,9 @@ def prompt_medium_confirmation(command: str, reason: str) -> bool:
     ui.render_medium_confirmation_header(command, reason)
     try:
         response = typer.prompt("Proceed with MEDIUM-risk execution? [y/N]", default="n", show_default=False)
+        if not response:
+            return False
         clean_resp = response.strip().lower()
         return clean_resp in {"y", "yes"}
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, typer.Abort, Exception):
         return False
