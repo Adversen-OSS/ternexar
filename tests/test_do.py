@@ -242,6 +242,54 @@ def test_medium_aliases_interactive_execution(mock_run, mock_ui, mock_audit, mon
 
 
 @pytest.mark.parametrize(
+    "cmd,expected_args",
+    [
+        ('pip install "Django<5"', ["pip", "install", "Django<5"]),
+        ('pip install "Django<=5"', ["pip", "install", "Django<=5"]),
+        ('pip install "Django>4"', ["pip", "install", "Django>4"]),
+        ('pip install "Django>=4"', ["pip", "install", "Django>=4"]),
+        ('pip install "Django==5.0"', ["pip", "install", "Django==5.0"]),
+        ('pip install "Django!=4.2"', ["pip", "install", "Django!=4.2"]),
+        ('pip install "requests>=2,<3"', ["pip", "install", "requests>=2,<3"]),
+        ('pip install "pkg>=1"', ["pip", "install", "pkg>=1"]),
+        ('pip3 install "urllib3<3"', ["pip3", "install", "urllib3<3"]),
+        ('npm install "example@>=1"', ["npm", "install", "example@>=1"]),
+        ('npm i "example@<2"', ["npm", "i", "example@<2"]),
+        ('yarn add "example@>=1"', ["yarn", "add", "example@>=1"]),
+        ('yarn add "example@<2"', ["yarn", "add", "example@<2"]),
+    ],
+)
+def test_version_constraints_medium_execution(mock_run, mock_ui, mock_audit, monkeypatch, cmd, expected_args):
+    """Test that legitimate version constraints in MEDIUM package installs are authorized and executed."""
+    assert risk_engine.analyze(cmd).level == RiskLevel.MEDIUM
+    assert is_medium_execution_eligible(cmd) is True
+
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+
+    # 1. Confirmed -> executes once with exact argv, shell=False, timeout=600
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda c, r: True)
+    handle_do(cmd)
+    mock_run.assert_called_once()
+    args, kwargs = mock_run.call_args
+    assert args[0] == expected_args
+    assert kwargs["shell"] is False
+    assert kwargs["timeout"] == 600
+
+    mock_run.reset_mock()
+    mock_audit.reset_mock()
+    mock_ui.reset_mock()
+
+    # 2. Declined -> executes zero times
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda c, r: False)
+    handle_do(cmd)
+    mock_run.assert_not_called()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "MEDIUM_DECLINED" in actions
+    assert "EXECUTION_START" not in actions
+
+
+
+@pytest.mark.parametrize(
     "cmd",
     [
         "pip add rich",
@@ -337,21 +385,76 @@ def test_malformed_and_empty_commands_refused(mock_run, mock_ui, mock_audit, mon
     assert "EXECUTION_REFUSED" in actions
 
 
+@pytest.mark.parametrize(
+    "shell_cmd",
+    [
+        "pip install rich ; whoami",
+        "pip install rich;whoami",
+        "pip install rich && whoami",
+        "pip install rich&&whoami",
+        "pip install rich || whoami",
+        "pip install rich||whoami",
+        "pip install rich | cat",
+        "pip install rich|cat",
+        "pip install rich > output.txt",
+        "pip install rich>output.txt",
+        "pip install rich >> output.txt",
+        "pip install rich>>output.txt",
+        "pip install rich < requirements.txt",
+        "pip install rich<requirements.txt",
+        "pip install rich `whoami`",
+        "pip install rich $(whoami)",
+        'pip install "$(whoami)"',
+        'pip install "`whoami`"',
+        "pip install rich &",
+        "pip install rich & whoami",
+        "(pip install rich)",
+        "pip install (whoami)",
+        "pip install Django<5",
+        "pip install Django>4",
+        "pip install requests>=2,<3",
+    ],
+)
+def test_shell_control_negative_matrix(mock_run, mock_ui, mock_audit, monkeypatch, shell_cmd):
+    """Commands with unquoted shell control, redirections, or substitutions must be refused."""
+    prompt_mock = MagicMock()
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
+
+    handle_do(shell_cmd)
+
+    prompt_mock.assert_not_called()
+    mock_run.assert_not_called()
+    mock_ui.render_refusal.assert_called_once()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "EXECUTION_REFUSED" in actions
+
+
 def test_literal_rich_markup_command_rendering(mock_run, monkeypatch):
     from ternexar.ui import ui
 
     monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
     monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda cmd, reason: True)
 
-    # Command containing Rich markup syntax e.g. brackets
-    cmd = 'pip install "requests[security]" "[bold red]test[/]"'
+    # Command containing Rich markup syntax e.g. brackets, tags, version bounds
+    cmd = 'pip install "requests[security]" "[bold red]test[/]" "[conceal]text[/conceal]" "Django<5" "requests>=2,<3"'
     handle_do(cmd)
 
     mock_run.assert_called_once()
     args, _ = mock_run.call_args
-    assert args[0] == ["pip", "install", "requests[security]", "[bold red]test[/]"]
+    assert args[0] == [
+        "pip",
+        "install",
+        "requests[security]",
+        "[bold red]test[/]",
+        "[conceal]text[/conceal]",
+        "Django<5",
+        "requests>=2,<3",
+    ]
 
     # Verify ui methods render literal text without throwing markup exception
     ui.render_medium_confirmation_header(cmd, "Package Installation")
     ui.render_execution_declined(cmd, "User declined")
     ui.render_minimal_confirmation("ls [test]")
+    ui.render_execution_result(cmd, "output", "", 0)
+    ui.render_refusal(cmd, "refused")

@@ -1,7 +1,9 @@
 import shlex
 import subprocess
+from typing import List
 from ternexar.risk import (
     RiskLevel,
+    contains_forbidden_elements,
     parse_supported_medium_install,
     risk_engine,
 )
@@ -25,8 +27,6 @@ STRICT_ALLOWLIST = [
     "date",
 ]
 
-FORBIDDEN_CHARS = [";", "&&", "||", "|", ">", ">>", "<", "`", "$("]
-
 LOW_EXECUTION_TIMEOUT_SECONDS = 10
 MEDIUM_INSTALL_TIMEOUT_SECONDS = 600
 
@@ -36,14 +36,6 @@ def is_in_allowlist(command: str) -> bool:
     # Special handling for multi-word allowlist items like 'git status'
     for allowed in STRICT_ALLOWLIST:
         if command == allowed or command.startswith(f"{allowed} "):
-            return True
-    return False
-
-
-def contains_forbidden_elements(command: str) -> bool:
-    """Check for shell metacharacters or forbidden chaining."""
-    for char in FORBIDDEN_CHARS:
-        if char in command:
             return True
     return False
 
@@ -114,6 +106,7 @@ def handle_do(command: str):
         return
 
     # 3. Risk-based Execution Boundary
+    exec_args: List[str]
     if gate_result.risk_level == RiskLevel.LOW:
         if not is_in_allowlist(command):
             log_refusal(
@@ -124,9 +117,20 @@ def handle_do(command: str):
             )
             return
         ui.render_minimal_confirmation(command)
+        try:
+            exec_args = shlex.split(command)
+        except (ValueError, Exception):
+            log_refusal(
+                command,
+                "Malformed command quotation.",
+                gate_result,
+                confirm_result,
+            )
+            return
 
     elif gate_result.risk_level == RiskLevel.MEDIUM:
-        if not is_medium_execution_eligible(command):
+        medium_install = parse_supported_medium_install(command)
+        if medium_install is None:
             log_refusal(
                 command,
                 "Command is classified as MEDIUM risk, but this command pattern is not execution-eligible in v1.1. Risk detected: MEDIUM",
@@ -169,6 +173,7 @@ def handle_do(command: str):
             result="CONFIRMED",
             notes="User granted explicit interactive confirmation.",
         )
+        exec_args = medium_install.argv
 
     else:
         log_refusal(
@@ -198,9 +203,8 @@ def handle_do(command: str):
         else MEDIUM_INSTALL_TIMEOUT_SECONDS
     )
     try:
-        args = shlex.split(command)
         result = subprocess.run(
-            args,
+            exec_args,
             shell=False,
             capture_output=True,
             text=True,

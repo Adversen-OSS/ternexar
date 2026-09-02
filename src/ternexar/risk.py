@@ -56,6 +56,10 @@ class SupportedMediumInstall:
     subcommand: str
     args: List[str]
 
+    @property
+    def argv(self) -> List[str]:
+        return [self.binary, self.subcommand, *self.args]
+
 
 SUPPORTED_MEDIUM_INSTALL_COMMANDS: Dict[str, Set[str]] = {
     "pip": {"install"},
@@ -65,6 +69,8 @@ SUPPORTED_MEDIUM_INSTALL_COMMANDS: Dict[str, Set[str]] = {
     "cargo": {"install"},
 }
 
+SHELL_PUNCTUATION_CHARS: Set[str] = set(";&|<>()")
+
 PACKAGE_INSTALL_RULE = RiskRule(
     pattern=r"\b(pip|pip3|npm|yarn|cargo)\b",
     level=RiskLevel.MEDIUM,
@@ -72,6 +78,39 @@ PACKAGE_INSTALL_RULE = RiskRule(
     label="Package Installation",
     alternative="Verify the package name and source before installing.",
 )
+
+
+def contains_forbidden_elements(command: str) -> bool:
+    """Check for shell metacharacters, redirection, chaining, or command substitution.
+
+    Distinguishes shell-control punctuation occurring outside quoted arguments from
+    punctuation legitimately contained inside quoted arguments (e.g. version constraints).
+    """
+    if not command or not command.strip():
+        return True
+
+    # 1. Command substitution / variable expansion (forbidden anywhere, quoted or unquoted)
+    if "`" in command or "$(" in command or "${" in command:
+        return True
+
+    # 2. Tokenize with shell punctuation awareness
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except (ValueError, Exception):
+        # Fail closed on malformed / unclosed quote input
+        return True
+
+    if not tokens:
+        return True
+
+    # 3. Check for standalone shell control / redirection tokens
+    for tok in tokens:
+        if all(c in SHELL_PUNCTUATION_CHARS for c in tok):
+            return True
+
+    return False
 
 
 def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInstall]:
@@ -87,11 +126,14 @@ def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInst
       - cargo install <args...>
 
     Returns a SupportedMediumInstall object if valid, None otherwise.
-    Fails closed on malformed input or empty commands.
+    Fails closed on malformed input, empty commands, or shell-control constructs.
     """
+    if contains_forbidden_elements(command):
+        return None
+
     try:
         args = shlex.split(command)
-    except Exception:
+    except (ValueError, Exception):
         return None
 
     if not args:
@@ -133,6 +175,7 @@ def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInst
         subcommand=subcommand,
         args=args[2:],
     )
+
 
 
 class RiskEngine:
