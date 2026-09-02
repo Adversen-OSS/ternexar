@@ -101,5 +101,5 @@ def prompt_medium_confirmation(command: str, reason: str) -> bool:
             return False
         clean_resp = response.strip().lower()
         return clean_resp in {"y", "yes"}
-    except (EOFError, KeyboardInterrupt, typer.Abort, Exception):
+    except (EOFError, KeyboardInterrupt, typer.Abort):
         return False

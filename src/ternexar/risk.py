@@ -1,7 +1,8 @@
 import re
-from enum import Enum
+import shlex
 from dataclasses import dataclass
-from typing import List, Optional
+from enum import Enum
+from typing import Dict, List, Optional, Set
 
 
 class RiskLevel(Enum):
@@ -47,6 +48,91 @@ class RiskAnalysis:
     @property
     def policy(self) -> str:
         return self.level.policy
+
+
+@dataclass(frozen=True)
+class SupportedMediumInstall:
+    binary: str
+    subcommand: str
+    args: List[str]
+
+
+SUPPORTED_MEDIUM_INSTALL_COMMANDS: Dict[str, Set[str]] = {
+    "pip": {"install"},
+    "pip3": {"install"},
+    "npm": {"install", "i"},
+    "yarn": {"install", "add"},
+    "cargo": {"install"},
+}
+
+PACKAGE_INSTALL_RULE = RiskRule(
+    pattern=r"\b(pip|pip3|npm|yarn|cargo)\b",
+    level=RiskLevel.MEDIUM,
+    reason="Installing packages can execute arbitrary code from a registry.",
+    label="Package Installation",
+    alternative="Verify the package name and source before installing.",
+)
+
+
+def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInstall]:
+    """Parse and validate whether a command matches the supported MEDIUM package install matrix.
+
+    Supported matrix:
+      - pip install <args...>
+      - pip3 install <args...>
+      - npm install <args...>
+      - npm i <args...>
+      - yarn install [args...]
+      - yarn add <args...>
+      - cargo install <args...>
+
+    Returns a SupportedMediumInstall object if valid, None otherwise.
+    Fails closed on malformed input or empty commands.
+    """
+    try:
+        args = shlex.split(command)
+    except Exception:
+        return None
+
+    if not args:
+        return None
+
+    binary = args[0].lower()
+
+    # Reject nested interpreters explicitly
+    nested_interpreters = {
+        "python",
+        "python3",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "csh",
+        "tcsh",
+        "perl",
+        "ruby",
+        "node",
+    }
+    if binary in nested_interpreters:
+        return None
+
+    allowed_subcommands = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(binary)
+    if allowed_subcommands is None:
+        return None
+
+    if len(args) < 2:
+        return None
+
+    subcommand = args[1].lower()
+    if subcommand not in allowed_subcommands:
+        return None
+
+    return SupportedMediumInstall(
+        binary=binary,
+        subcommand=subcommand,
+        args=args[2:],
+    )
 
 
 class RiskEngine:
@@ -117,14 +203,7 @@ class RiskEngine:
                 "Firewall Change",
                 "Consult security guidelines before opening ports.",
             ),
-            # MEDIUM
-            RiskRule(
-                r"\b(pip|npm|yarn|cargo)\s+install\b",
-                RiskLevel.MEDIUM,
-                "Installing packages can execute arbitrary code from a registry.",
-                "Package Installation",
-                "Verify the package name and source before installing.",
-            ),
+            # MEDIUM (Non-package installation rules)
             RiskRule(
                 r"rm\s+-rf\s+",
                 RiskLevel.MEDIUM,
@@ -167,6 +246,12 @@ class RiskEngine:
         found_matches = []
         highest_level = RiskLevel.LOW
 
+        # 1. Check structural package installation policy
+        if parse_supported_medium_install(command) is not None:
+            found_matches.append(PACKAGE_INSTALL_RULE)
+            highest_level = RiskLevel.MEDIUM
+
+        # 2. Check remaining regex rules
         for rule in self.rules:
             if re.search(rule.pattern, command, re.IGNORECASE):
                 found_matches.append(rule)

@@ -1,6 +1,10 @@
 import shlex
 import subprocess
-from ternexar.risk import RiskLevel, risk_engine
+from ternexar.risk import (
+    RiskLevel,
+    parse_supported_medium_install,
+    risk_engine,
+)
 from ternexar.gate import gate_engine, GateStatus
 from ternexar.confirm import (
     ConfirmationMode,
@@ -18,10 +22,14 @@ STRICT_ALLOWLIST = [
     "python --version",
     "python3 --version",
     "whoami",
-    "date"
+    "date",
 ]
 
 FORBIDDEN_CHARS = [";", "&&", "||", "|", ">", ">>", "<", "`", "$("]
+
+LOW_EXECUTION_TIMEOUT_SECONDS = 10
+MEDIUM_INSTALL_TIMEOUT_SECONDS = 600
+
 
 def is_in_allowlist(command: str) -> bool:
     """Check if the command starts with an allowlisted base command."""
@@ -30,6 +38,7 @@ def is_in_allowlist(command: str) -> bool:
         if command == allowed or command.startswith(f"{allowed} "):
             return True
     return False
+
 
 def contains_forbidden_elements(command: str) -> bool:
     """Check for shell metacharacters or forbidden chaining."""
@@ -47,54 +56,17 @@ def is_medium_execution_eligible(command: str) -> bool:
     are strictly separated.
 
     In v1.1, the supported MEDIUM execution family is package manager installation:
-      - pip install ... / pip3 install ...
-      - npm install ... / npm i ...
-      - yarn install ... / yarn add ...
-      - cargo install ...
+      - pip install <args...>
+      - pip3 install <args...>
+      - npm install <args...> / npm i <args...>
+      - yarn install [args...] / yarn add <args...>
+      - cargo install <args...>
 
     Generic keyword matches (e.g. 'delete'), recursive deletions ('rm -rf'), git cleanup
     ('git clean -fd'), and nested interpreter invocations ('python -c', 'sh -c', 'bash -c')
     are classification-only and remain non-executable (refused).
     """
-    try:
-        args = shlex.split(command)
-    except Exception:
-        return False
-
-    if not args:
-        return False
-
-    binary = args[0].lower()
-
-    # Explicitly refuse nested interpreters
-    nested_interpreters = {
-        "python",
-        "python3",
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "ksh",
-        "csh",
-        "tcsh",
-        "perl",
-        "ruby",
-        "node",
-    }
-    if binary in nested_interpreters:
-        return False
-
-    # Check authorized package installation command family
-    if binary in {"pip", "pip3"}:
-        return len(args) >= 2 and args[1].lower() == "install"
-    elif binary == "npm":
-        return len(args) >= 2 and args[1].lower() in {"install", "i"}
-    elif binary == "yarn":
-        return len(args) >= 2 and args[1].lower() in {"install", "add"}
-    elif binary == "cargo":
-        return len(args) >= 2 and args[1].lower() == "install"
-
-    return False
+    return parse_supported_medium_install(command) is not None
 
 
 def log_refusal(command: str, reason: str, gate_result=None, confirm_result=None):
@@ -220,6 +192,11 @@ def handle_do(command: str):
     )
 
     # 5. Execution
+    timeout = (
+        LOW_EXECUTION_TIMEOUT_SECONDS
+        if gate_result.risk_level == RiskLevel.LOW
+        else MEDIUM_INSTALL_TIMEOUT_SECONDS
+    )
     try:
         args = shlex.split(command)
         result = subprocess.run(
@@ -227,7 +204,7 @@ def handle_do(command: str):
             shell=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
 
         exit_code = result.returncode
@@ -238,7 +215,7 @@ def handle_do(command: str):
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Error: Command timed out after 10 seconds."
+        stderr = f"Error: Command timed out after {timeout} seconds."
         execution_status = "TIMEOUT"
     except Exception as e:
         exit_code = -1

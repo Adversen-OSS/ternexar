@@ -1,16 +1,27 @@
+import subprocess
+from unittest.mock import MagicMock, patch
 import pytest
-from unittest.mock import patch, MagicMock
-from ternexar.do import handle_do, STRICT_ALLOWLIST
+from ternexar.do import (
+    LOW_EXECUTION_TIMEOUT_SECONDS,
+    MEDIUM_INSTALL_TIMEOUT_SECONDS,
+    STRICT_ALLOWLIST,
+    handle_do,
+    is_medium_execution_eligible,
+)
+from ternexar.risk import RiskLevel, risk_engine
+
 
 @pytest.fixture
 def mock_ui():
     with patch("ternexar.do.ui") as mock:
         yield mock
 
+
 @pytest.fixture
 def mock_audit():
     with patch("ternexar.do.audit_manager") as mock:
         yield mock
+
 
 @pytest.fixture
 def mock_run():
@@ -18,35 +29,39 @@ def mock_run():
         mock.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
         yield mock
 
+
 def test_do_allowlisted(mock_run, mock_ui, mock_audit):
     # Test a clearly allowlisted command
     handle_do("ls -la")
-    
-    # Verify subprocess.run was called with shell=False
+
+    # Verify subprocess.run was called with shell=False and timeout=10
     mock_run.assert_called_once()
     args, kwargs = mock_run.call_args
     assert args[0] == ["ls", "-la"]
     assert kwargs["shell"] is False
-    
+    assert kwargs["timeout"] == LOW_EXECUTION_TIMEOUT_SECONDS
+
     # Verify UI render
     mock_ui.render_execution_result.assert_called_once()
+
 
 def test_do_not_allowlisted(mock_run, mock_ui, mock_audit):
     # Test a command NOT in allowlist
     handle_do("touch newfile")
-    
+
     # Verify subprocess.run was NOT called
     mock_run.assert_not_called()
-    
+
     # Verify refusal UI
     mock_ui.render_refusal.assert_called_once()
     args = mock_ui.render_refusal.call_args[0]
     assert "not in the strict v1.0 allowlist" in args[1]
 
+
 def test_do_dangerous_risk(mock_run, mock_ui, mock_audit):
     # Test a MEDIUM risk command in non-interactive mode
     handle_do("pip install rich")
-    
+
     mock_run.assert_not_called()
     mock_ui.render_refusal.assert_called_once()
     args = mock_ui.render_refusal.call_args[0]
@@ -63,6 +78,7 @@ def test_do_medium_interactive_confirmed(mock_run, mock_ui, mock_audit, monkeypa
     args, kwargs = mock_run.call_args
     assert args[0] == ["pip", "install", "rich"]
     assert kwargs["shell"] is False
+    assert kwargs["timeout"] == MEDIUM_INSTALL_TIMEOUT_SECONDS
 
     # Check audit calls: MEDIUM_CONFIRMED, EXECUTION_START, EXECUTION_END
     actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
@@ -115,12 +131,13 @@ def test_do_medium_command_identity_preserved(mock_run, mock_ui, mock_audit, mon
     assert prompt_calls == [cmd]
     args, kwargs = mock_run.call_args
     assert args[0] == ["pip", "install", "--no-deps", "requests"]
+    assert kwargs["timeout"] == MEDIUM_INSTALL_TIMEOUT_SECONDS
 
 
 def test_do_blocked_risk(mock_run, mock_ui, mock_audit):
     # Test a BLOCKED command
     handle_do("rm -rf /")
-    
+
     mock_run.assert_not_called()
     mock_ui.render_refusal.assert_called_once()
     args = mock_ui.render_refusal.call_args[0]
@@ -130,28 +147,129 @@ def test_do_blocked_risk(mock_run, mock_ui, mock_audit):
 def test_do_shell_injection(mock_run, mock_ui, mock_audit):
     # Test shell chaining
     handle_do("ls; rm -rf /")
-    
+
     mock_run.assert_not_called()
     mock_ui.render_refusal.assert_called_once()
     args = mock_ui.render_refusal.call_args[0]
     assert "forbidden shell characters" in args[1]
 
 
-def test_do_timeout(mock_run, mock_ui, mock_audit):
-    import subprocess
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd="ls", timeout=10)
+def test_do_timeout_low(mock_run, mock_ui, mock_audit):
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd="ls", timeout=LOW_EXECUTION_TIMEOUT_SECONDS)
 
     handle_do("ls")
 
     mock_ui.render_execution_result.assert_called_once()
     args = mock_ui.render_execution_result.call_args[0]
-    assert "timed out" in args[2]  # stderr
+    assert "timed out after 10 seconds" in args[2]  # stderr
     assert mock_run.call_args.kwargs["timeout"] == 10
+
+    # Verify audit event recorded as TIMEOUT
+    end_event = [call.kwargs for call in mock_audit.log_event.call_args_list if call.kwargs.get("action_type") == "EXECUTION_END"][0]
+    assert end_event["result"] == "TIMEOUT"
+
+
+def test_do_timeout_medium(mock_run, mock_ui, mock_audit, monkeypatch):
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda cmd, reason: True)
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd="pip install rich", timeout=MEDIUM_INSTALL_TIMEOUT_SECONDS)
+
+    handle_do("pip install rich")
+
+    mock_ui.render_execution_result.assert_called_once()
+    args = mock_ui.render_execution_result.call_args[0]
+    assert "timed out after 600 seconds" in args[2]  # stderr
+    assert mock_run.call_args.kwargs["timeout"] == 600
+
+    # Verify audit event recorded as TIMEOUT
+    end_event = [call.kwargs for call in mock_audit.log_event.call_args_list if call.kwargs.get("action_type") == "EXECUTION_END"][0]
+    assert end_event["result"] == "TIMEOUT"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip install rich",
+        "pip3 install rich",
+        "npm install lodash",
+        "npm i lodash",
+        "yarn install",
+        "yarn add lodash",
+        "cargo install ripgrep",
+    ],
+)
+def test_medium_parity_matrix(cmd):
+    """Test that all advertised MEDIUM commands classify MEDIUM and are execution-eligible."""
+    assert risk_engine.analyze(cmd).level == RiskLevel.MEDIUM
+    assert is_medium_execution_eligible(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd,expected_args",
+    [
+        ("pip3 install rich", ["pip3", "install", "rich"]),
+        ("npm i lodash", ["npm", "i", "lodash"]),
+        ("npm install lodash", ["npm", "install", "lodash"]),
+        ("yarn install", ["yarn", "install"]),
+        ("yarn add lodash", ["yarn", "add", "lodash"]),
+        ("cargo install ripgrep", ["cargo", "install", "ripgrep"]),
+    ],
+)
+def test_medium_aliases_interactive_execution(mock_run, mock_ui, mock_audit, monkeypatch, cmd, expected_args):
+    """Test that representative aliases execute once when confirmed, and zero times when declined."""
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+
+    # 1. Confirmed -> executes once
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda c, r: True)
+    handle_do(cmd)
+    mock_run.assert_called_once()
+    args, kwargs = mock_run.call_args
+    assert args[0] == expected_args
+    assert kwargs["shell"] is False
+    assert kwargs["timeout"] == 600
+
+    mock_run.reset_mock()
+    mock_audit.reset_mock()
+    mock_ui.reset_mock()
+
+    # 2. Declined -> executes zero times
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda c, r: False)
+    handle_do(cmd)
+    mock_run.assert_not_called()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "MEDIUM_DECLINED" in actions
+    assert "EXECUTION_START" not in actions
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip add rich",
+        "pip i rich",
+        "npm add lodash",
+        "yarn i lodash",
+        "cargo add ripgrep",
+        "cargo i ripgrep",
+    ],
+)
+def test_unsupported_package_manager_shapes_refused(mock_run, mock_ui, mock_audit, monkeypatch, cmd):
+    """Unsupported package manager shapes must not obtain MEDIUM execution eligibility."""
+    assert is_medium_execution_eligible(cmd) is False
+
+    prompt_mock = MagicMock()
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
+
+    handle_do(cmd)
+
+    prompt_mock.assert_not_called()
+    mock_run.assert_not_called()
+    mock_ui.render_refusal.assert_called_once()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "EXECUTION_REFUSED" in actions
 
 
 def test_original_security_bypass_prevented(mock_run, mock_ui, mock_audit, monkeypatch):
-    from ternexar.risk import risk_engine, RiskLevel
-
     prompt_mock = MagicMock()
     monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
     monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
@@ -187,6 +305,30 @@ def test_non_eligible_medium_commands_refused(mock_run, mock_ui, mock_audit, mon
     monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
 
     handle_do(cmd)
+
+    prompt_mock.assert_not_called()
+    mock_run.assert_not_called()
+    mock_ui.render_refusal.assert_called_once()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "EXECUTION_REFUSED" in actions
+
+
+@pytest.mark.parametrize(
+    "malformed_cmd",
+    [
+        "",
+        "   ",
+        'pip install "unterminated',
+        'pip3 install "unclosed quote',
+        'npm install \'unclosed',
+    ],
+)
+def test_malformed_and_empty_commands_refused(mock_run, mock_ui, mock_audit, monkeypatch, malformed_cmd):
+    prompt_mock = MagicMock()
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
+
+    handle_do(malformed_cmd)
 
     prompt_mock.assert_not_called()
     mock_run.assert_not_called()

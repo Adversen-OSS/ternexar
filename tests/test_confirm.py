@@ -74,3 +74,25 @@ def test_prompt_medium_confirmation_keyboard_interrupt(monkeypatch):
 
     monkeypatch.setattr("typer.prompt", raise_ki)
     assert prompt_medium_confirmation("pip install rich", "Package Installation") is False
+
+
+def test_prompt_medium_confirmation_typer_abort(monkeypatch):
+    monkeypatch.setattr("ternexar.confirm.is_interactive_terminal", lambda: True)
+
+    def raise_abort(*args, **kwargs):
+        import typer
+        raise typer.Abort()
+
+    monkeypatch.setattr("typer.prompt", raise_abort)
+    assert prompt_medium_confirmation("pip install rich", "Package Installation") is False
+
+
+def test_prompt_medium_confirmation_runtime_error_propagates(monkeypatch):
+    monkeypatch.setattr("ternexar.confirm.is_interactive_terminal", lambda: True)
+
+    def raise_runtime_error(*args, **kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr("typer.prompt", raise_runtime_error)
+    with pytest.raises(RuntimeError, match="unexpected"):
+        prompt_medium_confirmation("pip install rich", "Package Installation")

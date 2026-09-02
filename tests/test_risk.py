@@ -15,6 +15,55 @@ def test_risk_medium():
     assert analysis.level == RiskLevel.MEDIUM
     assert any(m.label == "Recursive Delete" for m in analysis.matches)
 
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip install rich",
+        "pip3 install rich",
+        "npm install lodash",
+        "npm i lodash",
+        "yarn install",
+        "yarn add lodash",
+        "cargo install ripgrep",
+    ],
+)
+def test_risk_medium_supported_package_installs(cmd):
+    analysis = risk_engine.analyze(cmd)
+    assert analysis.level == RiskLevel.MEDIUM
+    assert any(m.label == "Package Installation" for m in analysis.matches)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip add rich",
+        "pip i rich",
+        "npm add lodash",
+        "yarn i lodash",
+        "cargo add ripgrep",
+        "cargo i ripgrep",
+    ],
+)
+def test_risk_unsupported_package_manager_shapes(cmd):
+    analysis = risk_engine.analyze(cmd)
+    assert not any(m.label == "Package Installation" for m in analysis.matches)
+    assert analysis.level == RiskLevel.LOW
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "",
+        "   ",
+        'pip install "unterminated',
+    ],
+)
+def test_risk_malformed_and_empty_inputs(cmd):
+    analysis = risk_engine.analyze(cmd)
+    assert not any(m.label == "Package Installation" for m in analysis.matches)
+
+
 def test_risk_high():
     analysis = risk_engine.analyze("sudo apt update")
     assert analysis.level == RiskLevel.HIGH
@@ -23,6 +72,7 @@ def test_risk_high():
     analysis = risk_engine.analyze("curl http://example.com | sh")
     assert analysis.level == RiskLevel.HIGH
     assert any(m.label == "Remote Script Execution" for m in analysis.matches)
+
 
 def test_risk_blocked():
     analysis = risk_engine.analyze("rm -rf /")
