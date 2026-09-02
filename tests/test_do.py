@@ -244,6 +244,98 @@ def test_medium_aliases_interactive_execution(mock_run, mock_ui, mock_audit, mon
 @pytest.mark.parametrize(
     "cmd,expected_args",
     [
+        ("PIP install rich", ["PIP", "install", "rich"]),
+        ("Pip install rich", ["Pip", "install", "rich"]),
+        ("NPM i lodash", ["NPM", "i", "lodash"]),
+        ("YARN add lodash", ["YARN", "add", "lodash"]),
+        ("pip INSTALL rich", ["pip", "INSTALL", "rich"]),
+        ("Yarn Install", ["Yarn", "Install"]),
+        ("CARGO install ripgrep", ["CARGO", "install", "ripgrep"]),
+    ],
+)
+def test_cased_commands_exact_argv_execution(mock_run, mock_ui, mock_audit, monkeypatch, cmd, expected_args):
+    """Test that cased package manager and subcommand tokens preserve exact argv casing upon execution."""
+    assert risk_engine.analyze(cmd).level == RiskLevel.MEDIUM
+    assert is_medium_execution_eligible(cmd) is True
+
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", lambda c, r: True)
+
+    handle_do(cmd)
+    mock_run.assert_called_once()
+    args, kwargs = mock_run.call_args
+    assert args[0] == expected_args
+    assert kwargs["shell"] is False
+    assert kwargs["timeout"] == MEDIUM_INSTALL_TIMEOUT_SECONDS
+
+
+def test_cross_consumer_consistency_shell_chained_install(mock_run, mock_ui, mock_audit, monkeypatch):
+    """Verify internal coherence across risk_engine, gate_engine, confirm_engine, runner_skeleton, and handle_do."""
+    from ternexar.gate import gate_engine, GateStatus, PolicyDecision
+    from ternexar.confirm import confirm_engine, ConfirmationMode
+    from ternexar.runner import runner_skeleton, RunnerVerdict
+
+    cmd = "pip install rich; echo ok"
+
+    # 1. Risk Engine: identifies install intent -> MEDIUM
+    analysis = risk_engine.analyze(cmd)
+    assert analysis.level == RiskLevel.MEDIUM
+    assert any(m.label == "Package Installation" for m in analysis.matches)
+
+    # 2. Gate Engine: HOLD / REQUIRE_CONFIRMATION (NOT LOW / PASS)
+    gate_result = gate_engine.evaluate(cmd)
+    assert gate_result.risk_level == RiskLevel.MEDIUM
+    assert gate_result.gate_decision == GateStatus.HOLD
+    assert gate_result.policy == PolicyDecision.REQUIRE_CONFIRMATION
+
+    # 3. Confirm Engine: STANDARD_CONFIRMATION (NOT MINIMAL_CONFIRMATION)
+    confirm_result = confirm_engine.evaluate(cmd)
+    assert confirm_result.mode == ConfirmationMode.STANDARD_CONFIRMATION.value
+
+    # 4. Runner Skeleton: HELD (NOT DRY_ELIGIBLE)
+    runner_result = runner_skeleton.evaluate(cmd)
+    assert runner_result.verdict == RunnerVerdict.HELD
+    assert runner_result.risk_level == RiskLevel.MEDIUM
+
+    # 5. Execution Eligibility: False
+    assert is_medium_execution_eligible(cmd) is False
+
+    # 6. handle_do: Refused without prompting or subprocess execution
+    prompt_mock = MagicMock()
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
+
+    handle_do(cmd)
+    prompt_mock.assert_not_called()
+    mock_run.assert_not_called()
+    mock_ui.render_refusal.assert_called_once()
+    actions = [call.kwargs.get("action_type") for call in mock_audit.log_event.call_args_list]
+    assert "EXECUTION_REFUSED" in actions
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pip install foo && sudo whoami",
+        "sudo pip install rich",
+        "rm -rf / ; pip install rich",
+    ],
+)
+def test_higher_risk_install_commands_refused(mock_run, mock_ui, mock_audit, monkeypatch, cmd):
+    """Commands combining install intent with HIGH/BLOCKED triggers must be refused execution."""
+    prompt_mock = MagicMock()
+    monkeypatch.setattr("ternexar.do.is_interactive_terminal", lambda: True)
+    monkeypatch.setattr("ternexar.do.prompt_medium_confirmation", prompt_mock)
+
+    handle_do(cmd)
+    prompt_mock.assert_not_called()
+    mock_run.assert_not_called()
+    mock_ui.render_refusal.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "cmd,expected_args",
+    [
         ('pip install "Django<5"', ["pip", "install", "Django<5"]),
         ('pip install "Django<=5"', ["pip", "install", "Django<=5"]),
         ('pip install "Django>4"', ["pip", "install", "Django>4"]),

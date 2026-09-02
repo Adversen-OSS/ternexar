@@ -25,3 +25,10 @@ def test_gate_blocked():
     assert result.risk_level == RiskLevel.BLOCKED
     assert result.gate_decision == GateStatus.BLOCK
     assert result.policy == PolicyDecision.DENY
+
+
+def test_gate_medium_with_shell_control():
+    result = gate_engine.evaluate("pip install rich; echo ok")
+    assert result.risk_level == RiskLevel.MEDIUM
+    assert result.gate_decision == GateStatus.HOLD
+    assert result.policy == PolicyDecision.REQUIRE_CONFIRMATION

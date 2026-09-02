@@ -1,6 +1,6 @@
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set
 
@@ -55,10 +55,13 @@ class SupportedMediumInstall:
     binary: str
     subcommand: str
     args: List[str]
+    argv: List[str] = field(default_factory=list)
 
-    @property
-    def argv(self) -> List[str]:
-        return [self.binary, self.subcommand, *self.args]
+    def __post_init__(self):
+        if not self.argv:
+            object.__setattr__(
+                self, "argv", [self.binary, self.subcommand, *self.args]
+            )
 
 
 SUPPORTED_MEDIUM_INSTALL_COMMANDS: Dict[str, Set[str]] = {
@@ -79,6 +82,38 @@ PACKAGE_INSTALL_RULE = RiskRule(
     alternative="Verify the package name and source before installing.",
 )
 
+_INSTALL_INTENT_PATTERN = re.compile(
+    r"""
+    (?:^|[;&|()]\s*)                 # Start of command or chained command segment
+    (?P<mgr>pip|pip3|npm|yarn|cargo) # Package manager binary
+    \s+                              # Separator
+    (?P<subcmd>[a-zA-Z0-9_-]+)       # Subcommand token
+    (?=\s|[;&|<>()"'\`]|\Z)          # Followed by whitespace, shell delimiter, quote, or end of string
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def recognize_medium_install_intent(command: str) -> bool:
+    """Recognize whether a command expresses a known package-installation intent.
+
+    This function performs risk recognition only, identifying commands starting
+    with supported package managers and installation subcommands (e.g. 'pip install',
+    'npm i', 'yarn add', 'cargo install'), even if the command contains shell control
+    characters or malformed syntax that will later make it execution-ineligible.
+    """
+    if not command or not command.strip():
+        return False
+
+    for match in _INSTALL_INTENT_PATTERN.finditer(command):
+        mgr = match.group("mgr").lower()
+        subcmd = match.group("subcmd").lower()
+        allowed = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(mgr)
+        if allowed and subcmd in allowed:
+            return True
+
+    return False
+
 
 def contains_forbidden_elements(command: str) -> bool:
     """Check for shell metacharacters, redirection, chaining, or command substitution.
@@ -98,7 +133,7 @@ def contains_forbidden_elements(command: str) -> bool:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         tokens = list(lexer)
-    except (ValueError, Exception):
+    except ValueError:
         # Fail closed on malformed / unclosed quote input
         return True
 
@@ -133,13 +168,14 @@ def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInst
 
     try:
         args = shlex.split(command)
-    except (ValueError, Exception):
+    except ValueError:
         return None
 
     if not args:
         return None
 
-    binary = args[0].lower()
+    binary_original = args[0]
+    binary_normalized = binary_original.lower()
 
     # Reject nested interpreters explicitly
     nested_interpreters = {
@@ -156,24 +192,26 @@ def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInst
         "ruby",
         "node",
     }
-    if binary in nested_interpreters:
+    if binary_normalized in nested_interpreters:
         return None
 
-    allowed_subcommands = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(binary)
+    allowed_subcommands = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(binary_normalized)
     if allowed_subcommands is None:
         return None
 
     if len(args) < 2:
         return None
 
-    subcommand = args[1].lower()
-    if subcommand not in allowed_subcommands:
+    subcommand_original = args[1]
+    subcommand_normalized = subcommand_original.lower()
+    if subcommand_normalized not in allowed_subcommands:
         return None
 
     return SupportedMediumInstall(
-        binary=binary,
-        subcommand=subcommand,
+        binary=binary_original,
+        subcommand=subcommand_original,
         args=args[2:],
+        argv=args,
     )
 
 
@@ -289,8 +327,8 @@ class RiskEngine:
         found_matches = []
         highest_level = RiskLevel.LOW
 
-        # 1. Check structural package installation policy
-        if parse_supported_medium_install(command) is not None:
+        # 1. Check structural package installation intent
+        if recognize_medium_install_intent(command):
             found_matches.append(PACKAGE_INSTALL_RULE)
             highest_level = RiskLevel.MEDIUM
 

@@ -19,6 +19,12 @@ def test_confirm_standard():
     assert result.mode == ConfirmationMode.STANDARD_CONFIRMATION.value
 
 
+def test_confirm_standard_with_shell_control():
+    result = confirm_engine.evaluate("pip install rich; echo ok")
+    assert result.mode == ConfirmationMode.STANDARD_CONFIRMATION.value
+
+
+
 def test_confirm_strong():
     result = confirm_engine.evaluate("sudo rm file")
     assert result.mode == ConfirmationMode.STRONG_CONFIRMATION.value

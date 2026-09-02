@@ -119,7 +119,7 @@ def handle_do(command: str):
         ui.render_minimal_confirmation(command)
         try:
             exec_args = shlex.split(command)
-        except (ValueError, Exception):
+        except ValueError:
             log_refusal(
                 command,
                 "Malformed command quotation.",
