@@ -1,7 +1,8 @@
 import re
+import shlex
+from dataclasses import dataclass, field
 from enum import Enum
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 
 class RiskLevel(Enum):
@@ -47,6 +48,172 @@ class RiskAnalysis:
     @property
     def policy(self) -> str:
         return self.level.policy
+
+
+@dataclass(frozen=True)
+class SupportedMediumInstall:
+    binary: str
+    subcommand: str
+    args: List[str]
+    argv: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.argv:
+            object.__setattr__(
+                self, "argv", [self.binary, self.subcommand, *self.args]
+            )
+
+
+SUPPORTED_MEDIUM_INSTALL_COMMANDS: Dict[str, Set[str]] = {
+    "pip": {"install"},
+    "pip3": {"install"},
+    "npm": {"install", "i"},
+    "yarn": {"install", "add"},
+    "cargo": {"install"},
+}
+
+SHELL_PUNCTUATION_CHARS: Set[str] = set(";&|<>()")
+
+PACKAGE_INSTALL_RULE = RiskRule(
+    pattern=r"\b(pip|pip3|npm|yarn|cargo)\b",
+    level=RiskLevel.MEDIUM,
+    reason="Installing packages can execute arbitrary code from a registry.",
+    label="Package Installation",
+    alternative="Verify the package name and source before installing.",
+)
+
+_INSTALL_INTENT_PATTERN = re.compile(
+    r"""
+    (?:^|[;&|()]\s*)                 # Start of command or chained command segment
+    (?P<mgr>pip|pip3|npm|yarn|cargo) # Package manager binary
+    \s+                              # Separator
+    (?P<subcmd>[a-zA-Z0-9_-]+)       # Subcommand token
+    (?=\s|[;&|<>()"'\`]|\Z)          # Followed by whitespace, shell delimiter, quote, or end of string
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def recognize_medium_install_intent(command: str) -> bool:
+    """Recognize whether a command expresses a known package-installation intent.
+
+    This function performs risk recognition only, identifying commands starting
+    with supported package managers and installation subcommands (e.g. 'pip install',
+    'npm i', 'yarn add', 'cargo install'), even if the command contains shell control
+    characters or malformed syntax that will later make it execution-ineligible.
+    """
+    if not command or not command.strip():
+        return False
+
+    for match in _INSTALL_INTENT_PATTERN.finditer(command):
+        mgr = match.group("mgr").lower()
+        subcmd = match.group("subcmd").lower()
+        allowed = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(mgr)
+        if allowed and subcmd in allowed:
+            return True
+
+    return False
+
+
+def contains_forbidden_elements(command: str) -> bool:
+    """Check for shell metacharacters, redirection, chaining, or command substitution.
+
+    Distinguishes shell-control punctuation occurring outside quoted arguments from
+    punctuation legitimately contained inside quoted arguments (e.g. version constraints).
+    """
+    if not command or not command.strip():
+        return True
+
+    # 1. Command substitution / variable expansion (forbidden anywhere, quoted or unquoted)
+    if "`" in command or "$(" in command or "${" in command:
+        return True
+
+    # 2. Tokenize with shell punctuation awareness
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        # Fail closed on malformed / unclosed quote input
+        return True
+
+    if not tokens:
+        return True
+
+    # 3. Check for standalone shell control / redirection tokens
+    for tok in tokens:
+        if all(c in SHELL_PUNCTUATION_CHARS for c in tok):
+            return True
+
+    return False
+
+
+def parse_supported_medium_install(command: str) -> Optional[SupportedMediumInstall]:
+    """Parse and validate whether a command matches the supported MEDIUM package install matrix.
+
+    Supported matrix:
+      - pip install <args...>
+      - pip3 install <args...>
+      - npm install <args...>
+      - npm i <args...>
+      - yarn install [args...]
+      - yarn add <args...>
+      - cargo install <args...>
+
+    Returns a SupportedMediumInstall object if valid, None otherwise.
+    Fails closed on malformed input, empty commands, or shell-control constructs.
+    """
+    if contains_forbidden_elements(command):
+        return None
+
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        return None
+
+    if not args:
+        return None
+
+    binary_original = args[0]
+    binary_normalized = binary_original.lower()
+
+    # Reject nested interpreters explicitly
+    nested_interpreters = {
+        "python",
+        "python3",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "csh",
+        "tcsh",
+        "perl",
+        "ruby",
+        "node",
+    }
+    if binary_normalized in nested_interpreters:
+        return None
+
+    allowed_subcommands = SUPPORTED_MEDIUM_INSTALL_COMMANDS.get(binary_normalized)
+    if allowed_subcommands is None:
+        return None
+
+    if len(args) < 2:
+        return None
+
+    subcommand_original = args[1]
+    subcommand_normalized = subcommand_original.lower()
+    if subcommand_normalized not in allowed_subcommands:
+        return None
+
+    return SupportedMediumInstall(
+        binary=binary_original,
+        subcommand=subcommand_original,
+        args=args[2:],
+        argv=args,
+    )
+
 
 
 class RiskEngine:
@@ -117,14 +284,7 @@ class RiskEngine:
                 "Firewall Change",
                 "Consult security guidelines before opening ports.",
             ),
-            # MEDIUM
-            RiskRule(
-                r"\b(pip|npm|yarn|cargo)\s+install\b",
-                RiskLevel.MEDIUM,
-                "Installing packages can execute arbitrary code from a registry.",
-                "Package Installation",
-                "Verify the package name and source before installing.",
-            ),
+            # MEDIUM (Non-package installation rules)
             RiskRule(
                 r"rm\s+-rf\s+",
                 RiskLevel.MEDIUM,
@@ -167,6 +327,12 @@ class RiskEngine:
         found_matches = []
         highest_level = RiskLevel.LOW
 
+        # 1. Check structural package installation intent
+        if recognize_medium_install_intent(command):
+            found_matches.append(PACKAGE_INSTALL_RULE)
+            highest_level = RiskLevel.MEDIUM
+
+        # 2. Check remaining regex rules
         for rule in self.rules:
             if re.search(rule.pattern, command, re.IGNORECASE):
                 found_matches.append(rule)

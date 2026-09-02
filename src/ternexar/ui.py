@@ -135,7 +135,38 @@ class UI:
 
     def render_minimal_confirmation(self, command: str):
         """Show a minimal confirmation message before execution."""
-        self.console.print(f"[info]Executing LOW-risk command:[/] [bold white]{command}[/]")
+        msg = Text()
+        msg.append("Executing LOW-risk command: ", style="bold cyan")
+        msg.append(command, style="bold white")
+        self.console.print(msg)
+
+    def render_medium_confirmation_header(self, command: str, reason: str):
+        """Render a warning panel for MEDIUM-risk execution prompt."""
+        content = Text()
+        content.append("MEDIUM RISK COMMAND EXECUTION REQUESTED\n\n", style="bold yellow")
+        content.append("Command: ", style="default")
+        content.append(command, style="bold white")
+        content.append("\nReason:  ", style="default")
+        content.append(reason, style="dim")
+        content.append("\n\nInstalling packages can execute code from a package registry.", style="dim")
+
+        panel = Panel(
+            content,
+            title="[bold yellow]⚠ CONFIRMATION REQUIRED[/]",
+            border_style="yellow",
+            padding=(1, 2)
+        )
+        self.console.print(panel)
+
+    def render_execution_declined(self, command: str, reason: str):
+        """Render a notice when command execution is declined or cancelled."""
+        msg = Text()
+        msg.append("\nExecution Declined: ", style="bold yellow")
+        msg.append(reason, style="default")
+        msg.append("\nCommand '")
+        msg.append(command, style="bold white")
+        msg.append("' was not executed.\n", style="dim")
+        self.console.print(msg)
 
     def panel(
         self,

@@ -1,8 +1,19 @@
 import shlex
 import subprocess
-from ternexar.risk import RiskLevel, risk_engine
+from typing import List
+from ternexar.risk import (
+    RiskLevel,
+    contains_forbidden_elements,
+    parse_supported_medium_install,
+    risk_engine,
+)
 from ternexar.gate import gate_engine, GateStatus
-from ternexar.confirm import confirm_engine, ConfirmationMode
+from ternexar.confirm import (
+    ConfirmationMode,
+    confirm_engine,
+    is_interactive_terminal,
+    prompt_medium_confirmation,
+)
 from ternexar.audit import audit_manager
 from ternexar.ui import ui
 
@@ -13,10 +24,12 @@ STRICT_ALLOWLIST = [
     "python --version",
     "python3 --version",
     "whoami",
-    "date"
+    "date",
 ]
 
-FORBIDDEN_CHARS = [";", "&&", "||", "|", ">", ">>", "<", "`", "$("]
+LOW_EXECUTION_TIMEOUT_SECONDS = 10
+MEDIUM_INSTALL_TIMEOUT_SECONDS = 600
+
 
 def is_in_allowlist(command: str) -> bool:
     """Check if the command starts with an allowlisted base command."""
@@ -26,12 +39,27 @@ def is_in_allowlist(command: str) -> bool:
             return True
     return False
 
-def contains_forbidden_elements(command: str) -> bool:
-    """Check for shell metacharacters or forbidden chaining."""
-    for char in FORBIDDEN_CHARS:
-        if char in command:
-            return True
-    return False
+
+def is_medium_execution_eligible(command: str) -> bool:
+    """Determine whether a MEDIUM-risk command belongs to an authorized execution family.
+
+    Risk classification ("What damage class might this command represent?") and execution
+    eligibility ("Is this exact command family implemented and authorized for execution?")
+    are strictly separated.
+
+    In v1.1, the supported MEDIUM execution family is package manager installation:
+      - pip install <args...>
+      - pip3 install <args...>
+      - npm install <args...> / npm i <args...>
+      - yarn install [args...] / yarn add <args...>
+      - cargo install <args...>
+
+    Generic keyword matches (e.g. 'delete'), recursive deletions ('rm -rf'), git cleanup
+    ('git clean -fd'), and nested interpreter invocations ('python -c', 'sh -c', 'bash -c')
+    are classification-only and remain non-executable (refused).
+    """
+    return parse_supported_medium_install(command) is not None
+
 
 def log_refusal(command: str, reason: str, gate_result=None, confirm_result=None):
     """Log a refused execution attempt to the audit log."""
@@ -43,12 +71,13 @@ def log_refusal(command: str, reason: str, gate_result=None, confirm_result=None
         confirmation_mode=confirm_result.mode if confirm_result else "REFUSED",
         action_type="EXECUTION_REFUSED",
         result="REFUSED",
-        notes=reason
+        notes=reason,
     )
     ui.render_refusal(command, reason)
 
+
 def handle_do(command: str):
-    """Safely execute a LOW-risk, allowlisted command."""
+    """Safely execute a LOW or MEDIUM-risk command after safety validation and confirmation."""
     # 1. Structural checks
     if contains_forbidden_elements(command):
         log_refusal(command, "Command contains forbidden shell characters or chaining (e.g., |, &&, ;, >).")
@@ -58,40 +87,100 @@ def handle_do(command: str):
     gate_result = gate_engine.evaluate(command)
     confirm_result = confirm_engine.evaluate(command)
 
-    if gate_result.risk_level != RiskLevel.LOW:
+    if gate_result.risk_level in (RiskLevel.HIGH, RiskLevel.BLOCKED):
         log_refusal(
-            command, 
-            f"Only LOW risk commands are executable in v1.0. Risk detected: {gate_result.risk_level.value}",
+            command,
+            f"Execution refused for {gate_result.risk_level.value} risk level. Risk detected: {gate_result.risk_level.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
-    if gate_result.gate_decision != GateStatus.PASS:
+    if gate_result.gate_decision == GateStatus.BLOCK or confirm_result.mode == ConfirmationMode.REFUSED.value:
         log_refusal(
-            command, 
+            command,
             f"Command failed the execution gate. Status: {gate_result.gate_decision.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
-    if confirm_result.mode != ConfirmationMode.MINIMAL_CONFIRMATION.value:
-        log_refusal(
-            command, 
-            f"Command requires elevated confirmation ({confirm_result.mode}), which is not supported in v1.0.",
-            gate_result,
-            confirm_result
-        )
-        return
+    # 3. Risk-based Execution Boundary
+    exec_args: List[str]
+    if gate_result.risk_level == RiskLevel.LOW:
+        if not is_in_allowlist(command):
+            log_refusal(
+                command,
+                "Command is not in the strict v1.0 allowlist.",
+                gate_result,
+                confirm_result,
+            )
+            return
+        ui.render_minimal_confirmation(command)
+        try:
+            exec_args = shlex.split(command)
+        except ValueError:
+            log_refusal(
+                command,
+                "Malformed command quotation.",
+                gate_result,
+                confirm_result,
+            )
+            return
 
-    # 3. Allowlist check
-    if not is_in_allowlist(command):
+    elif gate_result.risk_level == RiskLevel.MEDIUM:
+        medium_install = parse_supported_medium_install(command)
+        if medium_install is None:
+            log_refusal(
+                command,
+                "Command is classified as MEDIUM risk, but this command pattern is not execution-eligible in v1.1. Risk detected: MEDIUM",
+                gate_result,
+                confirm_result,
+            )
+            return
+
+        if not is_interactive_terminal():
+            log_refusal(
+                command,
+                "Interactive confirmation required for MEDIUM risk command, but stdin is not interactive (non-TTY). Risk detected: MEDIUM",
+                gate_result,
+                confirm_result,
+            )
+            return
+
+        confirmed = prompt_medium_confirmation(command, gate_result.reason)
+        if not confirmed:
+            audit_manager.log_event(
+                command=command,
+                risk_level=gate_result.risk_level.value,
+                gate_decision=gate_result.gate_decision.value,
+                policy=gate_result.policy.value,
+                confirmation_mode=confirm_result.mode,
+                action_type="MEDIUM_DECLINED",
+                result="DECLINED",
+                notes="User declined interactive confirmation.",
+            )
+            ui.render_execution_declined(command, "User declined interactive confirmation.")
+            return
+
+        audit_manager.log_event(
+            command=command,
+            risk_level=gate_result.risk_level.value,
+            gate_decision=gate_result.gate_decision.value,
+            policy=gate_result.policy.value,
+            confirmation_mode=confirm_result.mode,
+            action_type="MEDIUM_CONFIRMED",
+            result="CONFIRMED",
+            notes="User granted explicit interactive confirmation.",
+        )
+        exec_args = medium_install.argv
+
+    else:
         log_refusal(
-            command, 
-            "Command is not in the strict v1.0 allowlist.",
+            command,
+            f"Unsupported risk level for execution: {gate_result.risk_level.value}",
             gate_result,
-            confirm_result
+            confirm_result,
         )
         return
 
@@ -104,22 +193,24 @@ def handle_do(command: str):
         confirmation_mode=confirm_result.mode,
         action_type="EXECUTION_START",
         result="STARTED",
-        notes="Passing through safety pipeline."
+        notes="Passing through safety pipeline.",
     )
 
-    # 6. Execution
-    ui.render_minimal_confirmation(command)
-    
+    # 5. Execution
+    timeout = (
+        LOW_EXECUTION_TIMEOUT_SECONDS
+        if gate_result.risk_level == RiskLevel.LOW
+        else MEDIUM_INSTALL_TIMEOUT_SECONDS
+    )
     try:
-        args = shlex.split(command)
         result = subprocess.run(
-            args,
+            exec_args,
             shell=False,
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=timeout,
         )
-        
+
         exit_code = result.returncode
         stdout = result.stdout
         stderr = result.stderr
@@ -128,7 +219,7 @@ def handle_do(command: str):
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Error: Command timed out after 10 seconds."
+        stderr = f"Error: Command timed out after {timeout} seconds."
         execution_status = "TIMEOUT"
     except Exception as e:
         exit_code = -1
@@ -136,7 +227,7 @@ def handle_do(command: str):
         stderr = f"Error: {str(e)}"
         execution_status = "ERROR"
 
-    # 7. Post-execution Audit
+    # 6. Post-execution Audit
     audit_manager.log_event(
         command=command,
         risk_level=gate_result.risk_level.value,
@@ -144,9 +235,9 @@ def handle_do(command: str):
         policy=gate_result.policy.value,
         confirmation_mode=confirm_result.mode,
         action_type="EXECUTION_END",
-        result=execution_status,
-        notes=f"Exit code: {exit_code}"
+        result="SUCCESS" if exit_code == 0 else execution_status,
+        notes=f"Exit code: {exit_code}",
     )
 
-    # 8. UI Result
+    # 7. UI Result
     ui.render_execution_result(command, stdout, stderr, exit_code)
